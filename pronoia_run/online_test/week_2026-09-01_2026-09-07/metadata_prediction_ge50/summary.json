@@ -1,0 +1,24 @@
+{
+  "screening_version": "metadata-direction-screen-v1",
+  "threshold": 50,
+  "body_used": false,
+  "catalog_events": 8171,
+  "selected": 1161,
+  "rejected": 7010,
+  "selected_by_category": {
+    "股东持股与控制权": 372,
+    "经营订单与项目": 129,
+    "监管法律与重大风险": 147,
+    "融资与债务": 344,
+    "治理人事与激励": 39,
+    "回购分红与股本": 56,
+    "并购重组与资产交易": 66,
+    "财务业绩与指引": 4,
+    "产品研发与许可": 4
+  },
+  "selected_by_market": {
+    "CN": 1157,
+    "US": 4
+  },
+  "output": "pronoia_run/online_test/week_2026-09-01_2026-09-07/metadata_prediction_ge50/metadata_direction_candidates_ge50.jsonl"
+}

@@ -650,7 +650,8 @@ async def macro_intel(topic: str | None = None) -> dict:
     "事件研究：基于 event_study 子能力，分析单次事件前后的异常收益（CAR）。"
     "event_date YYYY-MM-DD，symbol 支持 6 位 A 股代码或美股 ticker（AAPL/NVDA/TSLA）。"
     "如果传 keyword 而无 symbol，先用 search_stock 解析（自动识别美股/ A 股）。"
-    "window_days 默认 30；回测/严格 as-of 场景请传 as_of=True，此时仅返回事件日前数据（禁止未来函数）。",
+    "window_days 默认 30；回测/严格 as-of 场景请传 as_of=True，并传 prediction_cutoff_at，"
+    "此时仅返回截止时点已经完整收盘的数据（禁止未来函数）。",
     {
         "type": "object",
         "properties": {
@@ -662,7 +663,9 @@ async def macro_intel(topic: str | None = None) -> dict:
             "benchmark": {"type": "string",
                           "description": "基准指数/ETF：A 股传 sh000300 等；美股传 SPY/QQQ/XLK 等（优先使用调用方指定）"},
             "as_of": {"type": "boolean",
-                      "description": "严格 as-of 回测模式：True=只返回事件日及以前数据（禁止未来函数，不返回 post-event CAR）"},
+                      "description": "严格 as-of 回测模式：True=只返回预测截止时已完整收盘的数据"},
+            "prediction_cutoff_at": {"type": "string",
+                      "description": "预测截止时间（ISO 8601，含时区）；开盘前预测会自动排除 T0 收盘数据"},
         },
         "required": ["event_date"],
         "anyOf": [
@@ -678,7 +681,8 @@ async def event_study_skill(event_date: str, symbol: str | None = None,
                             keyword: str | None = None,
                             window_days: int = 30,
                             benchmark: str | None = None,
-                            as_of: bool = False) -> dict:
+                            as_of: bool = False,
+                            prediction_cutoff_at: str = "") -> dict:
     sym_raw = (symbol or "").strip()
     us = bool(sym_raw) and is_us_symbol(sym_raw)
     if us:
@@ -755,19 +759,29 @@ async def event_study_skill(event_date: str, symbol: str | None = None,
 
     # event_study 子能力用 pre/post 表达事件窗口；window_days 转为单边窗口长度
     pre = max(1, min(int(window_days or 30), 60))
-    # as_of=True 时 post 强制 0（event_study 内兜底再次强制，双重保险）
+    # as_of=True 时 post 强制 0；prediction_cutoff_at 在 T0 收盘前时底层进一步截断到 T-1。
     post = 0 if as_of else pre
     call_args = {
         "event_date": event_date, "symbol": sym,
         "pre": pre, "post": post,
         "index_symbol": idx_sym,
         "as_of": bool(as_of),
+        "prediction_cutoff_at": prediction_cutoff_at,
     }
     result = await execute_skill("event_study", call_args)
     if not result.get("ok"):
         return result
     es_data = result.get("data") or {}
     es_summary = es_data.get("summary") or {}
+    es_meta = result.get("meta") or {}
+    price_sources = {
+        "asset_provider": es_meta.get("asset_provider"),
+        "benchmark_provider": es_meta.get("benchmark_provider"),
+        "asset_attempts": es_meta.get("asset_attempts") or [],
+        "benchmark_attempts": es_meta.get("benchmark_attempts") or [],
+        "requested_start_date": es_meta.get("requested_start_date"),
+        "requested_end_date": es_meta.get("requested_end_date"),
+    }
 
     # ===== P0：严格 as_of 回测模式下，移除所有泄露未来信息的字段 =====
     if as_of:
@@ -777,6 +791,9 @@ async def event_study_skill(event_date: str, symbol: str | None = None,
              "event_date": event_date, "window_days": window_days,
              "benchmark": idx_sym,
              "as_of_mode": True,
+             "prediction_cutoff_at": prediction_cutoff_at or None,
+             "data_cutoff_date": es_summary.get("data_cutoff_date"),
+             "event_day_data_included": es_summary.get("event_day_data_included"),
              "signal_event_day_change_pct": es_summary.get("event_day_change_pct"),
              "signal_event_day_idx_change_pct": es_summary.get("event_day_idx_change_pct"),
              "signal_event_day_ar_pct": es_summary.get("event_day_ar_pct"),
@@ -787,6 +804,7 @@ async def event_study_skill(event_date: str, symbol: str | None = None,
              "benchmark_relative_car_t3_pct": None,
              "direction_hint": None,
              "postN_blocked": True,
+             "price_sources": price_sources,
              "event_study": es_data},
             meta("event_study_skill", 1),
             artifact=result.get("artifact"),
@@ -800,6 +818,7 @@ async def event_study_skill(event_date: str, symbol: str | None = None,
              "event_date": event_date, "window_days": window_days,
              "benchmark": idx_sym,
              "as_of_mode": False,
+             "price_sources": price_sources,
              "benchmark_relative_car_t3_pct": car_t3,
              "direction_hint": ("up" if car_t3 is not None and car_t3 > 0.5
                                 else "down" if car_t3 is not None and car_t3 < -0.5

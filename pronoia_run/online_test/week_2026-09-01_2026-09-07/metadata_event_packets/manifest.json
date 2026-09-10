@@ -1,0 +1,25 @@
+{
+  "packet_version": "metadata-event-packet-v1",
+  "screening_version": "metadata-direction-screen-v1",
+  "events": 1161,
+  "body_preloaded": 0,
+  "research_required": 1161,
+  "dataset_scope": "offline_backfill",
+  "by_market": {
+    "CN": 1157,
+    "US": 4
+  },
+  "by_category": {
+    "股东持股与控制权": 372,
+    "经营订单与项目": 129,
+    "监管法律与重大风险": 147,
+    "融资与债务": 344,
+    "治理人事与激励": 39,
+    "回购分红与股本": 56,
+    "并购重组与资产交易": 66,
+    "财务业绩与指引": 4,
+    "产品研发与许可": 4
+  },
+  "events_file": "pronoia_run/online_test/week_2026-09-01_2026-09-07/metadata_event_packets/event_packets_metadata_1161.jsonl",
+  "smoke_file": "pronoia_run/online_test/week_2026-09-01_2026-09-07/metadata_event_packets/event_packets_smoke_20.jsonl"
+}

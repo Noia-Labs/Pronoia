@@ -1,0 +1,25 @@
+{
+  "created_at": "2026-09-10T09:15:58+08:00",
+  "pipeline": "3 parallel source analysts -> DR -> fixed dual-horizon judge",
+  "events": 100,
+  "variants": [
+    "pre_atomic",
+    "atomic_claim_v2"
+  ],
+  "max_rounds": 8,
+  "event_concurrency": 1,
+  "strict_as_of": true,
+  "judge": "scorecard_dual_horizon_no_confidence_gate_v1",
+  "source_skill_policy": {
+    "event_scout": [
+      "frozen_announcement_fetch",
+      "announcement_classifier"
+    ],
+    "market_analyst": [
+      "event_study_skill",
+      "ar_decomposer",
+      "drift_context_analyzer"
+    ],
+    "fundamentals_analyst": []
+  }
+}

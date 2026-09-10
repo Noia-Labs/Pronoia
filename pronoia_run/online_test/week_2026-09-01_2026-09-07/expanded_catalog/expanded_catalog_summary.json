@@ -1,0 +1,32 @@
+{
+  "events": 8171,
+  "native_categories": 222,
+  "normalized_categories": {
+    "融资与债务": 1556,
+    "治理人事与激励": 1409,
+    "回购分红与股本": 668,
+    "信息沟通与程序文件": 2443,
+    "并购重组与资产交易": 228,
+    "其他待分类": 710,
+    "监管法律与重大风险": 243,
+    "经营订单与项目": 179,
+    "股东持股与控制权": 535,
+    "交易状态与市场异动": 117,
+    "产品研发与许可": 68,
+    "财务业绩与指引": 15
+  },
+  "roles": {
+    "evidence_only": 5066,
+    "review": 1860,
+    "prediction_candidate": 1245
+  },
+  "packet_status": {
+    "metadata_only": 7860,
+    "document_skipped_by_legacy_score": 229,
+    "document_fetch_failed_or_short": 1,
+    "document_fetched": 81
+  },
+  "catalog": "pronoia_run/online_test/week_2026-09-01_2026-09-07/expanded_catalog/all_event_catalog.jsonl",
+  "decision_standard": "pronoia_run/online_test/week_2026-09-01_2026-09-07/expanded_catalog/event_decision_standard.json",
+  "database_catalog_rows": 8171
+}

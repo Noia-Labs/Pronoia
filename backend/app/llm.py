@@ -66,12 +66,17 @@ def get_client() -> AsyncOpenAI:
     """返回 AsyncOpenAI client。优先 MAAS，其次 ARK。统一 model_name 用 config.LLM_MODEL。"""
     global _client
     if _client is None:
-        http_client = None
+        transport = None
         if config.LLM_FORCE_IPV4:
-            http_client = httpx.AsyncClient(
-                transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0", retries=2),
-                timeout=config.LLM_TIMEOUT,
-            )
+            transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0", retries=2)
+        # Do not inherit desktop HTTP(S)_PROXY values.  A stale local proxy can
+        # accept TCP and then hang forever during the CONNECT TLS handshake,
+        # making every concurrent expert fail at the same hard deadline.
+        http_client = httpx.AsyncClient(
+            transport=transport,
+            timeout=config.LLM_TIMEOUT,
+            trust_env=False,
+        )
         _client = AsyncOpenAI(
             base_url=config.LLM_BASE_URL,
             api_key=config.LLM_API_KEY,

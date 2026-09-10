@@ -139,7 +139,22 @@ def _inject_event_skill_defaults(
     no target symbol (571 failures in the 1000-sample trajectory).
     """
     normalized = dict(args or {})
-    if name != "event_study_skill" or not event_meta:
+    if not event_meta:
+        return normalized
+    if name == "frozen_announcement_fetch":
+        defaults = {
+            "source_url": event_meta.get("source_url"),
+            "source_key": event_meta.get("source_key") or event_meta.get("source_notice_code"),
+            "market": event_meta.get("market"),
+            "symbol": event_meta.get("symbol"),
+            "issuer_name": event_meta.get("issuer_name"),
+            "event_date": event_meta.get("event_time") or event_meta.get("published_at"),
+        }
+        for key, value in defaults.items():
+            if not normalized.get(key) and value:
+                normalized[key] = str(value)[:10] if key == "event_date" else value
+        return normalized
+    if name != "event_study_skill":
         return normalized
     if not normalized.get("symbol") and not normalized.get("keyword"):
         symbol = str(event_meta.get("symbol") or "").strip()
@@ -153,6 +168,10 @@ def _inject_event_skill_defaults(
         benchmark = str(event_meta.get("benchmark") or "").strip()
         if benchmark:
             normalized["benchmark"] = benchmark
+    if not normalized.get("prediction_cutoff_at"):
+        cutoff = str(event_meta.get("prediction_cutoff_at") or "").strip()
+        if cutoff:
+            normalized["prediction_cutoff_at"] = cutoff
     return normalized
 
 

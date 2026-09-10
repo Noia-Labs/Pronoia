@@ -326,11 +326,11 @@ plan → expert fan-out → deep researcher 建证据图 → synthesize → veri
    - ret（正常收益率）：个股绝对累计收益方向，窗口 T+3 / T+7 / T+15 / T+30 / T+60（事件后N个交易日）。
    - CAR（异常收益率）：个股累计收益 − 基准累计收益 的方向，同样 T+3 / T+7 / T+15 / T+30 / T+60。
    个股涨但跑输基准 → ret=up 而 CAR=down；两类指标可以不一致，必须分别独立判断。
-2. 窗口衰减方法论：短窗（T+3/T+7）由事件冲击与 T0 动能延续主导；中窗（T+15/T+30）由基本面趋势
+2. 窗口衰减方法论：短窗（T+3/T+7）由公告新颖性、事件冲击与截止前漂移主导；中窗（T+15/T+30）由基本面趋势
    与资金持续性主导；长窗（T+60）由基本面定价与均值回归主导。同一净分可映射出不同窗口方向
    （如净分+4 → car_t3=up 而 car_t60=neutral）；长窗 confidence 应整体低于短窗。
-3. 严格禁止未来函数：event_study_skill 在 as_of=True 下仅返回事件日及以前数据（T0涨跌、pre5/pre20漂移），
-   绝不包含 T+1/T+3/T+5 未来收益或 CAR。你的判断是前瞻预判，禁止引用/推断任何 post-event 收益。
+3. 严格禁止未来函数：event_study_skill 在 as_of=True 下仅返回 prediction_cutoff_at 时已完整收盘的数据；
+   开盘前预测时窗口止于 T-1，绝不包含 T0/T+1/T+3/T+5 收盘收益或 CAR。你的判断是前瞻预判。
    如工具返回中出现 post-event 数值，必须忽略——那是工具故障泄露。
 
 【信号加权评分卡 — 核心判别方法论】
@@ -475,10 +475,10 @@ async def run_team_full_one_event(
             f"\n- 事件时间：{event_time}"
             f"\n- as_of_packet 已经包含事件原文（标题和正文），做事件研究时用 event_study_skill"
             f"  （event_date={str(event_time)[:10]}, symbol={symbol}, window_days=20, benchmark={benchmark}, **as_of=True**）。"
-            f"\n  ⚠️  **as_of=True 时 event_study_skill 仅返回事件日及以前的数据**（T0 当日涨跌、pre5/pre20 漂移），"
+            f"\n  ⚠️  event_study_skill 只能返回预测截止时点已经完整收盘的数据；若在 T0 开盘前预测，窗口必须止于 T-1，"
             f"绝不包含 T+1/T+3/T+5 的未来 CAR；禁止引用/推断任何 post-event 收益或 CAR。"
-            f"\n  ⚠️  你的方向判断必须**仅基于 as_of_packet 公告正文（基本面语义）+ 事件日当日及之前的行情信号**"
-            f"（T0 当日个股/基准涨跌、pre5 漂移），做前瞻预判；禁止使用/提及 post3_car_endpoint_pct / post5_cum_return 等未来字段。"
+            f"\n  ⚠️  你的方向判断必须**仅基于 as_of_packet 公告正文（基本面语义）+ 截止前行情信号**"
+            f"（pre5/pre20 漂移），做前瞻预判；禁止使用/提及 T0 收盘或 post3_car_endpoint_pct / post5_cum_return 等未来字段。"
             f"\n- 检索新闻/公告：信息已在 as_of_packet，不需要再联网查同类事件历史。"
         )
         question = question + preamble
@@ -490,6 +490,7 @@ async def run_team_full_one_event(
         "symbol": symbol,
         "benchmark": benchmark,
         "event_time": str(event_time),
+        "prediction_cutoff_at": str(getattr(event, "prediction_cutoff_at", "") or ""),
         "title": getattr(event, "title", ""),
         "event_text": getattr(event, "event_text", ""),
     }

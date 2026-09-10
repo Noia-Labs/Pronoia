@@ -1,0 +1,53 @@
+{
+  "source_events": 1161,
+  "target": 100,
+  "selected": 100,
+  "complete": true,
+  "label_as_of": "2026-09-08",
+  "publication_precision": "second",
+  "t0_rule": "first actual CN benchmark session whose 09:15 cutoff follows publication",
+  "unique_symbol_effective_session": true,
+  "attempted": 159,
+  "rejections": {
+    "t3_not_observable_at_cutoff": 31,
+    "duplicate_symbol_effective_session": 18,
+    "incomplete_t1_t3_prices": 6,
+    "document_fetch_failed": 4
+  },
+  "document_sources": {
+    "checkpoint": 40,
+    "live": 60
+  },
+  "by_category": {
+    "股东持股与控制权": 17,
+    "融资与债务": 10,
+    "监管法律与重大风险": 8,
+    "经营订单与项目": 20,
+    "并购重组与资产交易": 13,
+    "回购分红与股本": 14,
+    "治理人事与激励": 15,
+    "产品研发与许可": 1,
+    "财务业绩与指引": 2
+  },
+  "by_effective_session": {
+    "2026-09-01": 51,
+    "2026-09-02": 36,
+    "2026-09-03": 13
+  },
+  "t1_labels": {
+    "up": 49,
+    "neutral": 19,
+    "down": 32
+  },
+  "t3_labels": {
+    "up": 56,
+    "down": 30,
+    "neutral": 14
+  },
+  "asset_providers": {
+    "tencent.kline": 92,
+    "akshare.stock_zh_a_hist_tx": 8
+  },
+  "events_file": "pronoia_run/online_test/week_2026-09-01_2026-09-07/precise_t1_t3_100/events_precise_t1_t3_100.jsonl",
+  "labels_file": "pronoia_run/online_test/week_2026-09-01_2026-09-07/precise_t1_t3_100/labels_precise_t1_t3_100.jsonl"
+}
