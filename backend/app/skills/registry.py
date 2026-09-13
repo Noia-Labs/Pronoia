@@ -223,4 +223,5 @@ def ensure_skills_loaded() -> None:
         evidence_graph,  # 9 个 _eg_* sub-tool（被 skill evidence_graph 内部 dispatch）
         skill,            # 8 个高层 skill（composite 改名为 skill，对 LLM 可见）
         analyzers,        # 7 个分析推理 skill（Tier 2 信号处理 + Tier 1 市场分析思维）
+        frozen_document,  # 严格 allowlist 的冻结公告正文读取
     )  # noqa: F401

@@ -13,10 +13,12 @@ class TestExternalDataResilience(unittest.IsolatedAsyncioTestCase):
             "symbol": "SH516160",
             "event_time": "2025-01-22T09:30:00+08:00",
             "benchmark": "sh000300",
+            "prediction_cutoff_at": "2025-01-22T09:15:00+08:00",
         })
         self.assertEqual(args["symbol"], "SH516160")
         self.assertEqual(args["event_date"], "2025-01-22")
         self.assertEqual(args["benchmark"], "sh000300")
+        self.assertEqual(args["prediction_cutoff_at"], "2025-01-22T09:15:00+08:00")
 
     def test_norm_symbol_preserves_shanghai_etf_family(self):
         self.assertEqual(norm_symbol("516160"), "sh516160")
@@ -38,12 +40,14 @@ class TestExternalDataResilience(unittest.IsolatedAsyncioTestCase):
                 symbol="SH516160",
                 benchmark="sh000300",
                 as_of=True,
+                prediction_cutoff_at="2025-01-22T09:15:00+08:00",
             )
 
         self.assertFalse(result["ok"])
         self.assertEqual(seen["symbol"], "sh516160")
         self.assertEqual(seen["index_symbol"], "sh000300")
         self.assertTrue(seen["as_of"])
+        self.assertEqual(seen["prediction_cutoff_at"], "2025-01-22T09:15:00+08:00")
 
     async def test_event_study_infers_exchange_for_bare_etf(self):
         seen = {}

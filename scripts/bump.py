@@ -14,7 +14,7 @@
   - frontend/src/components/Sidebar.tsx  (Pronoia logo 旁角标)
 
 附加：
-  - --changelog "..."  在 README.md 的 ## 📋 更新日志 追加一行
+  - --changelog "..."  在 CHANGELOG.md 追加一节（最新在前）
   - --commit           bump 后自动 git add + commit
   - --push             bump + commit 后自动 git push
   - --tag              bump + commit 后自动打 tag (vX.Y.Z)
@@ -39,7 +39,7 @@ FRONTEND_VERSION_TS = ROOT / "frontend/src/version.ts"
 FRONTEND_PACKAGE_JSON = ROOT / "frontend/package.json"
 BACKEND_MAIN_PY = ROOT / "backend/app/main.py"
 SIDEBAR_TSX = ROOT / "frontend/src/components/Sidebar.tsx"
-README = ROOT / "README.md"
+CHANGELOG = ROOT / "CHANGELOG.md"
 
 
 def read_version() -> tuple[int, int, int]:
@@ -111,48 +111,22 @@ def write_all(new_ver: str) -> None:
 
 
 def update_changelog(ver: str, kind: str, msg: str) -> None:
-    """在 README.md 的「📋 更新日志」节追加一行。"""
-    if not README.exists():
-        return
-    src = README.read_text(encoding="utf-8")
+    """在 CHANGELOG.md 顶部标题后插入新一节（最新在前）。"""
     today = date.today().isoformat()
     label = {"patch": "修补", "minor": "功能", "major": "重大"}[kind]
-    entry = f"- **{ver}** · {today} · {label}：{msg}\n"
+    entry = f"## {ver} · {today}\n\n- {label}：{msg}\n"
 
-    # 若有「📋 更新日志」节则插入到最上面（最新在前）；否则追加新节
-    if "## 📋 更新日志" in src:
-        # 找到该节标题后的第一个非空行，在它之前插入新条目
-        lines = src.splitlines(keepends=True)
-        out: list[str] = []
-        inserted = False
-        in_section = False
-        for i, ln in enumerate(lines):
-            if not inserted and ln.startswith("## 📋 更新日志"):
-                out.append(ln)
-                in_section = True
-                continue
-            if in_section and not inserted:
-                # 跳过节标题后的所有空行，但保留一个空行分隔
-                if ln.strip() == "":
-                    out.append(ln)
-                    continue
-                out.append(entry)
-                inserted = True
-                in_section = False
-            out.append(ln)
-        if not inserted:
-            # 节标题存在但下面没有任何非空行，直接追加
-            out.append(entry)
-        src = "".join(out)
+    if CHANGELOG.exists():
+        src = CHANGELOG.read_text(encoding="utf-8")
     else:
-        # 首次添加：在「🗺 路线图」节之前插入新节
-        src = re.sub(
-            r"(## 🗺 路线图)",
-            f"## 📋 更新日志\n\n{entry}\n\\1",
-            src,
-            count=1,
-        )
-    README.write_text(src, encoding="utf-8")
+        src = "# 更新日志\n"
+    lines = src.splitlines(keepends=True)
+    # 跳过顶部的一级标题与空行，在其后插入新条目
+    i = 0
+    while i < len(lines) and (lines[i].startswith("# ") or lines[i].strip() == ""):
+        i += 1
+    out = lines[:i] + [entry + "\n"] + lines[i:]
+    CHANGELOG.write_text("".join(out), encoding="utf-8")
 
 
 def git(*args: str, check: bool = True) -> subprocess.CompletedProcess:

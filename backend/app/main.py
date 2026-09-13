@@ -37,7 +37,7 @@ from .routes import (
     simulations,
 )
 
-app = FastAPI(title="Pronoia", version="3.12.1", docs_url="/api/docs")
+app = FastAPI(title="Pronoia", version="3.13.0", docs_url="/api/docs")
 
 
 @app.exception_handler(RequestValidationError)

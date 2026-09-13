@@ -54,31 +54,46 @@ Thumbs.db
 # Runtime data
 backend/data/event_analyses/*.json
 backend/data/free_market_snapshots/*.json
-debug-homepage-stuck-events.md
 
-# Data directory (event pools, trajectory ckpts, oracle labels, prediction caches)
-# Regenerate via `scripts/build_real_datasets_from_v9.py` + labeller CLI if needed
-data/
+# Local data workspace (event pools, labels, caches). Tracked samples excepted.
+data/*
+!data/samples/
+data_snapshots/
+outputs/
+
+# Backtesting research artifacts (heavy data, checkpoints, reports stay local)
+backtesting/_trajectory_ckpt_*/
+backtesting/mirofish_*/
+backtesting/judge_ab_*/
+backtesting/skill_resilience_*/
+backtesting/*.jsonl
+backtesting/*.csv
+backtesting/*.json
+backtesting/*.png
+backtesting/*.svg
+backtesting/rlvr/**/*.jsonl
+backtesting/rlvr/**/*.csv
+backtesting/rlvr/**/*.json
+backtesting/rlvr/**/*.png
+backtesting/rlvr/**/*.html
 
 # Archives / prototypes (kept locally but not in VC)
 archive/
 
-# Runtime pids / logs (created by scripts/dev.sh)
+# Runtime pids / logs
 .run/
 .pronoia-launcher/
 .pronoia-state/
 *.log
 
-# Local technical reports
+# Local reports
 tech-report/
+test-report/
 
-# Local runtime workspace. Existing tracked history must be cleaned separately.
+# Local runtime workspace
 pronoia_run/
-test-report/pronoia_run/dotenv_backup.env
-pronoia_run/dotenv_backup.env
-pronoia_run/backup/
 
-# 本地临时产物：测试脚本与输出（AGENTS.md 约定的 temp 目录）· IDE 分享包
+# 本地临时产物 · IDE 分享包
 temp/
 .trae-html-share-packages/
 
