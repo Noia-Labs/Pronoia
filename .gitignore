@@ -1,5 +1,6 @@
 # Environments
 .env
+.env.share
 .env.local
 .env.development.local
 .env.test.local
@@ -7,6 +8,7 @@
 **/.env
 **/.env.*
 !**/.env.example
+!**/.env.share.example
 
 # Node modules
 node_modules/
@@ -30,6 +32,13 @@ __pycache__/
 backend/fever.db
 backend/fever.db-shm
 backend/fever.db-wal
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.*.model-secrets/
 
 # OS files
 .DS_Store
@@ -56,9 +65,15 @@ archive/
 
 # Runtime pids / logs (created by scripts/dev.sh)
 .run/
+.pronoia-launcher/
+.pronoia-state/
+*.log
 
 # Local technical reports
 tech-report/
+
+# Local runtime workspace. Existing tracked history must be cleaned separately.
+pronoia_run/
 test-report/pronoia_run/dotenv_backup.env
 pronoia_run/dotenv_backup.env
 pronoia_run/backup/

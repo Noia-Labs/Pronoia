@@ -12,11 +12,15 @@ import sqlite3
 import threading
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from . import config
 
 _lock = threading.RLock()
+# Guards validate-then-persist relationships whose ids are stored inside JSON
+# rather than protected by SQLite foreign keys (notably Arena -> Run).
+HISTORY_RELATION_LOCK = threading.RLock()
 _conn: Optional[sqlite3.Connection] = None
 
 
@@ -70,20 +74,65 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(case_id) REFERENCES cases(id) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS simulation_jobs(
+                id TEXT PRIMARY KEY,
+                case_id TEXT NOT NULL,
+                graph_artifact_id TEXT NOT NULL,
+                gateway_job_id TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                progress REAL NOT NULL DEFAULT 0,
+                request_payload TEXT NOT NULL,
+                error TEXT,
+                artifact_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                finished_at TEXT,
+                FOREIGN KEY(case_id) REFERENCES cases(id) ON DELETE CASCADE,
+                FOREIGN KEY(graph_artifact_id) REFERENCES artifacts(id) ON DELETE CASCADE,
+                FOREIGN KEY(artifact_id) REFERENCES artifacts(id) ON DELETE SET NULL
+            );
             CREATE INDEX IF NOT EXISTS idx_messages_case ON messages(case_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_artifacts_case ON artifacts(case_id, pinned DESC, created_at);
+            CREATE INDEX IF NOT EXISTS idx_simulation_jobs_case ON simulation_jobs(case_id, created_at);
 
             -- ==================== Pronoia Backtest tables (P0) ====================
+            CREATE TABLE IF NOT EXISTS bt_saved_models(
+                id TEXT PRIMARY KEY,
+                identity_key TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                definition_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS bt_model_tombstones(
+                model_id TEXT PRIMARY KEY,
+                deleted_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS bt_runs(
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 status TEXT NOT NULL,
                 runner TEXT NOT NULL,
+                strategy_type TEXT DEFAULT 'event',
+                strategy_spec_json TEXT,
+                engine_mode TEXT DEFAULT 'event_proxy',
+                result_nature TEXT DEFAULT 'proxy',
+                dataset_id TEXT,
+                dataset_name TEXT,
+                dataset_version TEXT,
+                protocol_hash TEXT,
+                visibility TEXT DEFAULT 'private',
+                oracle_status TEXT DEFAULT 'unavailable',
+                execution_spec_json TEXT,
                 prompt_variant TEXT,
                 model_version TEXT,
                 events_path TEXT NOT NULL,
                 labels_path TEXT,
                 out_path TEXT NOT NULL,
+                result_path TEXT,
                 ckpt_dir TEXT,
                 concurrency INTEGER DEFAULT 2,
                 total_events INTEGER DEFAULT 0,
@@ -116,6 +165,12 @@ def init_db() -> None:
                 oracle_car_t3 REAL,
                 is_correct_t3 INTEGER,
                 trajectory_ckpt TEXT,
+                horizon TEXT,
+                tokens_in INTEGER DEFAULT 0,
+                tokens_out INTEGER DEFAULT 0,
+                step_ms INTEGER DEFAULT 0,
+                cost_usd REAL DEFAULT 0,
+                strategy_metadata_json TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(run_id) REFERENCES bt_runs(id) ON DELETE CASCADE
             );
@@ -145,8 +200,51 @@ def init_db() -> None:
                 by_symbol_json TEXT,
                 date_range_json TEXT,
                 labels_path TEXT,
+                dataset_kind TEXT DEFAULT 'event',
+                current_version TEXT,
+                snapshot_hash TEXT,
+                status TEXT DEFAULT 'available',
+                source_json TEXT,
+                markets_json TEXT,
+                asset_type TEXT,
+                frequency TEXT,
+                adjustment TEXT,
+                calendar TEXT,
+                symbols_json TEXT,
+                schema_mapping_json TEXT,
+                capabilities_json TEXT,
+                coverage_json TEXT,
+                quality_status TEXT DEFAULT 'unverified',
+                quality_report_json TEXT,
+                updated_at TEXT,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS bt_dataset_versions(
+                dataset_id TEXT NOT NULL,
+                id TEXT NOT NULL,
+                path TEXT,
+                labels_path TEXT,
+                snapshot_hash TEXT,
+                status TEXT NOT NULL,
+                source_json TEXT,
+                markets_json TEXT,
+                asset_type TEXT,
+                frequency TEXT,
+                adjustment TEXT,
+                calendar TEXT,
+                symbols_json TEXT,
+                schema_mapping_json TEXT,
+                capabilities_json TEXT,
+                coverage_json TEXT,
+                quality_status TEXT,
+                quality_report_json TEXT,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(dataset_id, id),
+                FOREIGN KEY(dataset_id) REFERENCES bt_datasets(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_bt_dataset_versions_dataset
+                ON bt_dataset_versions(dataset_id, created_at DESC);
 
             CREATE TABLE IF NOT EXISTS evolution_items(
                 id TEXT PRIMARY KEY,
@@ -170,6 +268,8 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS bt_arenas(
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
+                arena_type TEXT DEFAULT 'prediction',
+                protocol_hash TEXT,
                 dataset_id TEXT,                   -- 对应 bt_datasets.id（可选）
                 dataset_name TEXT,                 -- 显示用的数据集名（冗余，防止 dataset 被删后丢失名字）
                 run_ids_json TEXT NOT NULL,        -- JSON 数组：参与比对的 run_id 列表
@@ -385,6 +485,162 @@ def init_db() -> None:
                 FOREIGN KEY(run_id) REFERENCES prospective_runs(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_prospective_jobs_due ON prospective_jobs(status, run_after, locked_until);
+
+            -- ==================== Pronoia Model Lab ====================
+            -- Model credentials are never stored here. ``secret_env_ref`` is
+            -- an opaque local credential or validated environment reference.
+            CREATE TABLE IF NOT EXISTS ml_model_profiles(
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                secret_env_ref TEXT NOT NULL,
+                max_output_tokens INTEGER NOT NULL DEFAULT 65536,
+                timeout_seconds REAL NOT NULL DEFAULT 600,
+                thinking_mode TEXT NOT NULL DEFAULT 'auto',
+                input_price_per_million REAL NOT NULL DEFAULT 0,
+                output_price_per_million REAL NOT NULL DEFAULT 0,
+                currency TEXT NOT NULL DEFAULT 'CNY',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                last_validated_at TEXT,
+                last_validation_status TEXT,
+                last_validation_message TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ml_profiles_name
+                ON ml_model_profiles(name COLLATE NOCASE);
+            CREATE INDEX IF NOT EXISTS idx_ml_profiles_updated
+                ON ml_model_profiles(updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS ml_settings(
+                key TEXT PRIMARY KEY,
+                value_json TEXT,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ml_question_sets(
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                version TEXT NOT NULL DEFAULT '1',
+                is_builtin INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS ml_questions(
+                id TEXT PRIMARY KEY,
+                question_set_id TEXT NOT NULL,
+                code TEXT NOT NULL,
+                display_code TEXT,
+                is_archived INTEGER NOT NULL DEFAULT 0,
+                experiment TEXT,
+                category TEXT,
+                role TEXT,
+                method TEXT,
+                scenario TEXT,
+                prompt TEXT NOT NULL,
+                skills_json TEXT,
+                deliverable TEXT,
+                gold_standard TEXT,
+                metrics TEXT,
+                risk TEXT,
+                priority TEXT,
+                position INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(question_set_id) REFERENCES ml_question_sets(id) ON DELETE CASCADE,
+                UNIQUE(question_set_id, code)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ml_questions_set
+                ON ml_questions(question_set_id, position, code);
+
+            CREATE TABLE IF NOT EXISTS ml_batches(
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                profile_ids_json TEXT NOT NULL,
+                dataset_id TEXT,
+                dataset_version TEXT,
+                question_set_id TEXT,
+                prediction_config_json TEXT,
+                qa_config_json TEXT,
+                scoring_config_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT,
+                error_msg TEXT,
+                FOREIGN KEY(question_set_id) REFERENCES ml_question_sets(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ml_batches_created
+                ON ml_batches(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_ml_batches_status
+                ON ml_batches(status);
+
+            CREATE TABLE IF NOT EXISTS ml_tasks(
+                id TEXT PRIMARY KEY,
+                batch_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                profile_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                total_items INTEGER NOT NULL DEFAULT 0,
+                done_items INTEGER NOT NULL DEFAULT 0,
+                backtest_run_id TEXT,
+                config_json TEXT,
+                result_json TEXT,
+                error_msg TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                started_at TEXT,
+                finished_at TEXT,
+                FOREIGN KEY(batch_id) REFERENCES ml_batches(id) ON DELETE CASCADE,
+                FOREIGN KEY(profile_id) REFERENCES ml_model_profiles(id) ON DELETE RESTRICT,
+                FOREIGN KEY(backtest_run_id) REFERENCES bt_runs(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ml_tasks_batch
+                ON ml_tasks(batch_id, kind, profile_id);
+            CREATE INDEX IF NOT EXISTS idx_ml_tasks_status
+                ON ml_tasks(status);
+
+            CREATE TABLE IF NOT EXISTS ml_qa_results(
+                id TEXT PRIMARY KEY,
+                batch_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                profile_id TEXT NOT NULL,
+                question_id TEXT NOT NULL,
+                variant TEXT NOT NULL DEFAULT 'pronoia',
+                repeat_no INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL,
+                answer TEXT,
+                usage_json TEXT,
+                tool_trace_json TEXT,
+                latency_ms INTEGER NOT NULL DEFAULT 0,
+                cost REAL,
+                auto_score_json TEXT,
+                manual_score_json TEXT,
+                final_score_json TEXT,
+                error_msg TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(batch_id) REFERENCES ml_batches(id) ON DELETE CASCADE,
+                FOREIGN KEY(task_id) REFERENCES ml_tasks(id) ON DELETE CASCADE,
+                FOREIGN KEY(profile_id) REFERENCES ml_model_profiles(id) ON DELETE RESTRICT,
+                FOREIGN KEY(question_id) REFERENCES ml_questions(id) ON DELETE RESTRICT,
+                UNIQUE(task_id, question_id, variant, repeat_no)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ml_qa_results_task
+                ON ml_qa_results(task_id, question_id, variant, repeat_no);
+
+            CREATE TABLE IF NOT EXISTS ml_event_experiments(
+                run_id TEXT PRIMARY KEY,
+                qa_batch_id TEXT UNIQUE,
+                auto_start INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(run_id) REFERENCES bt_runs(id) ON DELETE CASCADE,
+                FOREIGN KEY(qa_batch_id) REFERENCES ml_batches(id) ON DELETE SET NULL
+            );
             """
         )
         conn.commit()
@@ -397,6 +653,98 @@ def init_db() -> None:
                 conn.commit()
             except Exception:
                 pass
+        # Unified backtest metadata. ALTER TABLE keeps existing user databases intact.
+        run_columns = {
+            "strategy_type": "TEXT DEFAULT 'event'",
+            "strategy_spec_json": "TEXT",
+            "engine_mode": "TEXT DEFAULT 'event_proxy'",
+            "result_nature": "TEXT DEFAULT 'proxy'",
+            "dataset_id": "TEXT",
+            "dataset_name": "TEXT",
+            "dataset_version": "TEXT",
+            "protocol_hash": "TEXT",
+            "visibility": "TEXT DEFAULT 'private'",
+            "oracle_status": "TEXT DEFAULT 'unavailable'",
+            "execution_spec_json": "TEXT",
+            "result_path": "TEXT",
+        }
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(bt_runs)").fetchall()}
+        for column, ddl in run_columns.items():
+            if column not in cols:
+                conn.execute(f"ALTER TABLE bt_runs ADD COLUMN {column} {ddl}")
+        # SQLite applies the new default to legacy rows; correct their Oracle
+        # status from the already persisted labels_path.
+        conn.execute(
+            "UPDATE bt_runs SET oracle_status='available' "
+            "WHERE labels_path IS NOT NULL AND TRIM(labels_path) <> '' "
+            "AND (oracle_status IS NULL OR oracle_status='unavailable')"
+        )
+
+        prediction_columns = {
+            "horizon": "TEXT",
+            "tokens_in": "INTEGER DEFAULT 0",
+            "tokens_out": "INTEGER DEFAULT 0",
+            "step_ms": "INTEGER DEFAULT 0",
+            "cost_usd": "REAL DEFAULT 0",
+            "strategy_metadata_json": "TEXT",
+        }
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(bt_predictions)").fetchall()}
+        for column, ddl in prediction_columns.items():
+            if column not in cols:
+                conn.execute(f"ALTER TABLE bt_predictions ADD COLUMN {column} {ddl}")
+
+        arena_columns = {
+            "arena_type": "TEXT DEFAULT 'prediction'",
+            "protocol_hash": "TEXT",
+        }
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(bt_arenas)").fetchall()}
+        for column, ddl in arena_columns.items():
+            if column not in cols:
+                conn.execute(f"ALTER TABLE bt_arenas ADD COLUMN {column} {ddl}")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_bt_runs_protocol ON bt_runs(protocol_hash)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_bt_runs_dataset_version ON bt_runs(dataset_version)")
+
+        dataset_columns = {
+            "dataset_kind": "TEXT DEFAULT 'event'",
+            "current_version": "TEXT",
+            "snapshot_hash": "TEXT",
+            "status": "TEXT DEFAULT 'available'",
+            "source_json": "TEXT",
+            "markets_json": "TEXT",
+            "asset_type": "TEXT",
+            "frequency": "TEXT",
+            "adjustment": "TEXT",
+            "calendar": "TEXT",
+            "symbols_json": "TEXT",
+            "schema_mapping_json": "TEXT",
+            "capabilities_json": "TEXT",
+            "coverage_json": "TEXT",
+            "quality_status": "TEXT DEFAULT 'unverified'",
+            "quality_report_json": "TEXT",
+            "updated_at": "TEXT",
+        }
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(bt_datasets)").fetchall()}
+        for column, ddl in dataset_columns.items():
+            if column not in cols:
+                conn.execute(f"ALTER TABLE bt_datasets ADD COLUMN {column} {ddl}")
+        conn.execute(
+            "UPDATE bt_datasets SET status='available' "
+            "WHERE (status IS NULL OR status='') AND path IS NOT NULL AND TRIM(path) <> ''"
+        )
+        conn.execute(
+            "UPDATE bt_datasets SET dataset_kind='event' WHERE dataset_kind IS NULL OR dataset_kind=''"
+        )
+        # Keep original question references and codes for historical evaluations.
+        # A bank revision can retire questions or renumber their visible labels
+        # without changing the UNIQUE(question_set_id, code) identity.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(ml_questions)").fetchall()}
+        for column, ddl in {
+            "display_code": "TEXT",
+            "is_archived": "INTEGER NOT NULL DEFAULT 0",
+        }.items():
+            if column not in cols:
+                conn.execute(f"ALTER TABLE ml_questions ADD COLUMN {column} {ddl}")
+        conn.commit()
         # bt_metrics_snapshots.metrics_json（快照也存完整指标，向后兼容）
         cols_snap = [r[1] for r in conn.execute("PRAGMA table_info(bt_metrics_snapshots)").fetchall()]
         if "metrics_json" not in cols_snap:
@@ -513,6 +861,7 @@ def touch_case(case_id: str) -> None:
 def delete_case(case_id: str) -> bool:
     with _lock:
         conn = _get_conn()
+        conn.execute("DELETE FROM simulation_jobs WHERE case_id=?", (case_id,))
         conn.execute("DELETE FROM messages WHERE case_id=?", (case_id,))
         conn.execute("DELETE FROM artifacts WHERE case_id=?", (case_id,))
         cur = conn.execute("DELETE FROM cases WHERE id=?", (case_id,))
@@ -545,6 +894,36 @@ def add_message(
         "id": mid, "case_id": case_id, "role": role, "agent": agent,
         "content": content, "tool_trace": tool_trace, "created_at": ts,
     }
+
+
+def update_message(
+    message_id: str,
+    *,
+    content: str,
+    tool_trace: Optional[Any] = None,
+    agent: Optional[str] = None,
+) -> Optional[dict]:
+    """Checkpoint an in-flight assistant message without changing its identity."""
+
+    trace_json = json.dumps(tool_trace, ensure_ascii=False) if tool_trace else None
+    ts = now_iso()
+    with _lock:
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT case_id FROM messages WHERE id=?", (message_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute(
+            "UPDATE messages SET agent=?,content=?,tool_trace=? WHERE id=?",
+            (agent, content, trace_json, message_id),
+        )
+        conn.execute(
+            "UPDATE cases SET updated_at=? WHERE id=?", (ts, row["case_id"])
+        )
+        conn.commit()
+    messages = [m for m in list_messages(row["case_id"]) if m["id"] == message_id]
+    return messages[0] if messages else None
 
 
 def list_messages(case_id: str, limit: Optional[int] = None) -> list[dict]:
@@ -652,12 +1031,28 @@ def toggle_pin(case_id: str, artifact_id: str) -> Optional[dict]:
 
 # ===================================================== bt_runs (Backtest Run) ====
 
-_BT_RUN_FIELDS = (
-    "id,name,status,runner,prompt_variant,model_version,events_path,labels_path,"
-    "out_path,ckpt_dir,concurrency,total_events,done_events,acc_t3_strict,"
-    "acc_t3_strict_lo,acc_t3_non_neutral,config_json,created_at,updated_at,"
-    "started_at,finished_at,error_msg"
+_BT_RUN_COLUMNS = (
+    "id", "name", "status", "runner", "strategy_type", "strategy_spec_json",
+    "engine_mode", "result_nature", "dataset_id", "dataset_name", "dataset_version",
+    "protocol_hash", "visibility", "oracle_status", "execution_spec_json",
+    "prompt_variant", "model_version", "events_path", "labels_path", "out_path", "result_path",
+    "ckpt_dir", "concurrency", "total_events", "done_events", "acc_t3_strict",
+    "acc_t3_strict_lo", "acc_t3_non_neutral", "config_json", "created_at",
+    "updated_at", "started_at", "finished_at", "error_msg",
 )
+_BT_RUN_FIELDS = ",".join(_BT_RUN_COLUMNS)
+
+
+def _bt_run_evaluation_horizon(payload: dict[str, Any]) -> str:
+    """Derive the canonical horizon for old rows without requiring a migration."""
+    try:
+        from .event_backtest.evaluation_protocol import resolve_run_horizon
+
+        return resolve_run_horizon(payload)
+    except (TypeError, ValueError):
+        # Legacy rows may contain experimental/composite horizons. They remain
+        # readable, while all newly-created runs are validated at the API edge.
+        return "t3"
 
 
 def _row_to_bt_run(row: sqlite3.Row | None) -> dict | None:
@@ -665,6 +1060,9 @@ def _row_to_bt_run(row: sqlite3.Row | None) -> dict | None:
         return None
     d = dict(row)
     d["config"] = json.loads(d["config_json"]) if d.get("config_json") else None
+    d["strategy_spec"] = json.loads(d["strategy_spec_json"]) if d.get("strategy_spec_json") else None
+    d["execution_spec"] = json.loads(d["execution_spec_json"]) if d.get("execution_spec_json") else None
+    d["evaluation_horizon"] = _bt_run_evaluation_horizon(d)
     d["concurrency"] = int(d["concurrency"] or 2)
     d["total_events"] = int(d["total_events"] or 0)
     d["done_events"] = int(d["done_events"] or 0)
@@ -685,21 +1083,38 @@ def create_bt_run(
     concurrency: int = 2,
     total_events: int = 0,
     config: dict | None = None,
+    strategy_type: str = "event",
+    dataset_id: str | None = None,
+    dataset_name: str | None = None,
+    protocol_hash: str | None = None,
+    visibility: str = "private",
+    oracle_status: str | None = None,
+    execution_spec: dict | None = None,
+    dataset_version: str | None = None,
+    strategy_spec: dict | None = None,
+    engine_mode: str = "event_proxy",
+    result_nature: str = "proxy",
+    result_path: str | None = None,
+    _commit: bool = True,
 ) -> dict:
     rid, ts = run_id or new_id(), now_iso()
     cfg_json = json.dumps(config or {}, ensure_ascii=False) if config else None
     with _lock:
         conn = _get_conn()
         conn.execute(
-            f"INSERT INTO bt_runs({_BT_RUN_FIELDS}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            f"INSERT INTO bt_runs({_BT_RUN_FIELDS}) VALUES({','.join('?' for _ in _BT_RUN_COLUMNS)})",
             (
-                rid, name, "pending", runner, prompt_variant, model_version,
-                events_path, labels_path, out_path, ckpt_dir, concurrency,
-                total_events, 0, None, None, None, cfg_json, ts, ts,
-                None, None, None,
+                rid, name, "pending", runner, strategy_type,
+                json.dumps(strategy_spec, ensure_ascii=False) if strategy_spec else None,
+                engine_mode, result_nature, dataset_id, dataset_name, dataset_version,
+                protocol_hash, visibility, oracle_status or ("available" if labels_path else "unavailable"),
+                json.dumps(execution_spec, ensure_ascii=False) if execution_spec else None,
+                prompt_variant, model_version, events_path, labels_path, out_path, result_path, ckpt_dir,
+                concurrency, total_events, 0, None, None, None, cfg_json, ts, ts, None, None, None,
             ),
         )
-        conn.commit()
+        if _commit:
+            conn.commit()
     row = _get_conn().execute("SELECT * FROM bt_runs WHERE id=?", (rid,)).fetchone()
     return _row_to_bt_run(row) or {"id": rid, "name": name, "status": "pending"}
 
@@ -745,6 +1160,7 @@ def update_bt_run_progress(
     run_id: str,
     *,
     done_events: int,
+    total_events: int | None = None,
     acc_t3_strict: float | None = None,
     acc_t3_strict_lo: float | None = None,
     acc_t3_non_neutral: float | None = None,
@@ -752,6 +1168,8 @@ def update_bt_run_progress(
     ts = now_iso()
     fields = ["done_events = ?", "updated_at = ?"]
     args: list[Any] = [int(done_events), ts]
+    if total_events is not None:
+        fields.append("total_events = ?"); args.append(max(0, int(total_events)))
     if acc_t3_strict is not None:
         fields.append("acc_t3_strict = ?"); args.append(float(acc_t3_strict))
     if acc_t3_strict_lo is not None:
@@ -762,6 +1180,18 @@ def update_bt_run_progress(
     with _lock:
         conn = _get_conn()
         conn.execute(f"UPDATE bt_runs SET {', '.join(fields)} WHERE id=?", tuple(args))
+        conn.commit()
+    return get_bt_run(run_id)
+
+
+def update_bt_run_protocol_hash(run_id: str, protocol_hash: str) -> dict | None:
+    """Persist a lazily derived protocol hash for legacy runs."""
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE bt_runs SET protocol_hash=?, updated_at=? WHERE id=?",
+            (protocol_hash, now_iso(), run_id),
+        )
         conn.commit()
     return get_bt_run(run_id)
 
@@ -791,6 +1221,12 @@ def add_bt_prediction(
     oracle_car_t3: float | None = None,
     is_correct_t3: bool | None = None,
     trajectory_ckpt: str | None = None,
+    horizon: str | None = None,
+    tokens_in: int = 0,
+    tokens_out: int = 0,
+    step_ms: int = 0,
+    cost_usd: float = 0.0,
+    strategy_metadata: dict[str, Any] | None = None,
     pred_id: str | None = None,
 ) -> dict:
     pid, ts = pred_id or new_id(), now_iso()
@@ -799,13 +1235,19 @@ def add_bt_prediction(
         conn.execute(
             "INSERT INTO bt_predictions(id,run_id,event_id,symbol,market,event_type_l2,"
             "pred_direction,confidence,abstain,rationale,oracle_label_t3,oracle_car_t3,"
-            "is_correct_t3,trajectory_ckpt,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "is_correct_t3,trajectory_ckpt,horizon,tokens_in,tokens_out,step_ms,cost_usd,"
+            "strategy_metadata_json,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 pid, run_id, event_id, symbol, market, event_type_l2,
                 pred_direction, confidence, 1 if abstain else 0,
                 rationale, oracle_label_t3, oracle_car_t3,
                 1 if is_correct_t3 else (0 if is_correct_t3 is False else None),
-                trajectory_ckpt, ts,
+                trajectory_ckpt, horizon, max(0, int(tokens_in or 0)), max(0, int(tokens_out or 0)),
+                max(0, int(step_ms or 0)), max(0.0, float(cost_usd or 0.0)),
+                json.dumps(strategy_metadata, ensure_ascii=False, separators=(",", ":"))
+                if isinstance(strategy_metadata, dict) else None,
+                ts,
             ),
         )
         conn.commit()
@@ -813,6 +1255,27 @@ def add_bt_prediction(
         "id": pid, "run_id": run_id, "event_id": event_id,
         "pred_direction": pred_direction, "confidence": confidence,
         "abstain": abstain, "created_at": ts,
+    }
+
+
+def aggregate_bt_prediction_cost(run_id: str) -> dict[str, int | float]:
+    """Aggregate persisted run cost; schema problems are allowed to surface to tests/logs."""
+    with _lock:
+        row = _get_conn().execute(
+            """
+            SELECT COALESCE(SUM(tokens_in), 0) AS tokens_in,
+                   COALESCE(SUM(tokens_out), 0) AS tokens_out,
+                   COALESCE(SUM(step_ms), 0) AS step_ms_total,
+                   COALESCE(SUM(cost_usd), 0) AS cost_usd
+            FROM bt_predictions WHERE run_id=?
+            """,
+            (run_id,),
+        ).fetchone()
+    return {
+        "tokens_in": int(row["tokens_in"] or 0) if row else 0,
+        "tokens_out": int(row["tokens_out"] or 0) if row else 0,
+        "step_ms_total": int(row["step_ms_total"] or 0) if row else 0,
+        "cost_usd": float(row["cost_usd"] or 0.0) if row else 0.0,
     }
 
 
@@ -849,6 +1312,23 @@ def list_bt_predictions(
         d = dict(r)
         d["abstain"] = bool(d.get("abstain"))
         d["is_correct_t3"] = bool(d["is_correct_t3"]) if d.get("is_correct_t3") is not None else None
+        trajectory_path = str(d.get("trajectory_ckpt") or "").strip()
+        try:
+            trajectory_available = bool(trajectory_path and Path(trajectory_path).is_file())
+        except OSError:
+            trajectory_available = False
+        d["trajectory_available"] = trajectory_available
+        if not trajectory_available:
+            d["trajectory_ckpt"] = None
+        try:
+            d["strategy_metadata"] = (
+                json.loads(d["strategy_metadata_json"])
+                if d.get("strategy_metadata_json") else None
+            )
+        except (json.JSONDecodeError, TypeError):
+            d["strategy_metadata"] = None
+        d.pop("strategy_metadata_json", None)
+        d["expected_return_pct"] = (d.get("strategy_metadata") or {}).get("expected_return_pct")
         out.append(d)
     return total, out
 
@@ -863,7 +1343,50 @@ def get_bt_prediction(run_id: str, event_id: str) -> dict | None:
     d = dict(row)
     d["abstain"] = bool(d.get("abstain"))
     d["is_correct_t3"] = bool(d["is_correct_t3"]) if d.get("is_correct_t3") is not None else None
+    trajectory_path = str(d.get("trajectory_ckpt") or "").strip()
+    try:
+        trajectory_available = bool(trajectory_path and Path(trajectory_path).is_file())
+    except OSError:
+        trajectory_available = False
+    d["trajectory_available"] = trajectory_available
+    if not trajectory_available:
+        d["trajectory_ckpt"] = None
+    try:
+        d["strategy_metadata"] = (
+            json.loads(d["strategy_metadata_json"])
+            if d.get("strategy_metadata_json") else None
+        )
+    except (json.JSONDecodeError, TypeError):
+        d["strategy_metadata"] = None
+    d.pop("strategy_metadata_json", None)
+    d["expected_return_pct"] = (d.get("strategy_metadata") or {}).get("expected_return_pct")
     return d
+
+
+def update_bt_prediction_oracle(
+    run_id: str,
+    event_id: str,
+    *,
+    oracle_label_t3: str | None,
+    oracle_car_t3: float | None,
+    is_correct_t3: bool | None,
+) -> bool:
+    """Update existing predictions in place instead of duplicating them at run finalization."""
+    with _lock:
+        conn = _get_conn()
+        cur = conn.execute(
+            "UPDATE bt_predictions SET oracle_label_t3=?,oracle_car_t3=?,is_correct_t3=? "
+            "WHERE run_id=? AND event_id=?",
+            (
+                oracle_label_t3,
+                oracle_car_t3,
+                1 if is_correct_t3 else (0 if is_correct_t3 is False else None),
+                run_id,
+                event_id,
+            ),
+        )
+        conn.commit()
+    return cur.rowcount > 0
 
 
 # ============================================ bt_metrics_snapshots (time series) ====
@@ -913,29 +1436,98 @@ def upsert_bt_dataset(
     by_symbol: dict | None = None,
     date_range: dict | None = None,
     labels_path: str | None = None,
+    dataset_kind: str = "event",
+    dataset_version: str | None = None,
+    snapshot_hash: str | None = None,
+    status: str = "available",
+    source: dict | None = None,
+    markets: list[str] | None = None,
+    asset_type: str | None = None,
+    frequency: str | None = None,
+    adjustment: str | None = None,
+    calendar: str | None = None,
+    symbols: list[str] | None = None,
+    schema_mapping: dict | None = None,
+    capabilities: dict | None = None,
+    coverage: dict | None = None,
+    quality_status: str = "unverified",
+    quality_report: dict | None = None,
 ) -> dict:
     ts = now_iso()
-    def _j(d): return json.dumps(d, ensure_ascii=False) if d else None
+    def _j(d): return json.dumps(d, ensure_ascii=False) if d is not None else None
     with _lock:
         conn = _get_conn()
         existing = conn.execute("SELECT id FROM bt_datasets WHERE id=?", (dataset_id,)).fetchone()
         if existing:
             conn.execute(
                 "UPDATE bt_datasets SET path=?,name=?,total_events=?,by_market_json=?,"
-                "by_type_json=?,by_symbol_json=?,date_range_json=?,labels_path=? WHERE id=?",
+                "by_type_json=?,by_symbol_json=?,date_range_json=?,labels_path=?,dataset_kind=?,"
+                "current_version=?,snapshot_hash=?,status=?,source_json=?,markets_json=?,asset_type=?,"
+                "frequency=?,adjustment=?,calendar=?,symbols_json=?,schema_mapping_json=?,"
+                "capabilities_json=?,coverage_json=?,quality_status=?,quality_report_json=?,updated_at=? "
+                "WHERE id=?",
                 (path, name, int(total_events), _j(by_market), _j(by_type), _j(by_symbol),
-                 _j(date_range), labels_path, dataset_id),
+                 _j(date_range), labels_path, dataset_kind, dataset_version, snapshot_hash, status,
+                 _j(source), _j(markets), asset_type, frequency, adjustment, calendar, _j(symbols),
+                 _j(schema_mapping), _j(capabilities), _j(coverage), quality_status,
+                 _j(quality_report), ts, dataset_id),
             )
         else:
             conn.execute(
                 "INSERT INTO bt_datasets(id,path,name,total_events,by_market_json,"
-                "by_type_json,by_symbol_json,date_range_json,labels_path,created_at)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "by_type_json,by_symbol_json,date_range_json,labels_path,dataset_kind,current_version,"
+                "snapshot_hash,status,source_json,markets_json,asset_type,frequency,adjustment,calendar,"
+                "symbols_json,schema_mapping_json,capabilities_json,coverage_json,quality_status,"
+                "quality_report_json,updated_at,created_at)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (dataset_id, path, name, int(total_events), _j(by_market), _j(by_type),
-                 _j(by_symbol), _j(date_range), labels_path, ts),
+                 _j(by_symbol), _j(date_range), labels_path, dataset_kind, dataset_version,
+                 snapshot_hash, status, _j(source), _j(markets), asset_type, frequency, adjustment,
+                 calendar, _j(symbols), _j(schema_mapping), _j(capabilities), _j(coverage),
+                 quality_status, _j(quality_report), ts, ts),
+            )
+        if dataset_version:
+            conn.execute(
+                "INSERT OR IGNORE INTO bt_dataset_versions("
+                "id,dataset_id,path,labels_path,snapshot_hash,status,source_json,markets_json,"
+                "asset_type,frequency,adjustment,calendar,symbols_json,schema_mapping_json,"
+                "capabilities_json,coverage_json,quality_status,quality_report_json,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    dataset_version, dataset_id, path or None, labels_path, snapshot_hash, status,
+                    _j(source), _j(markets), asset_type, frequency, adjustment, calendar, _j(symbols),
+                    _j(schema_mapping), _j(capabilities), _j(coverage), quality_status,
+                    _j(quality_report), ts,
+                ),
             )
         conn.commit()
     return get_bt_dataset(dataset_id) or {"id": dataset_id, "path": path, "name": name}
+
+
+_BT_DATASET_JSON_COLUMNS = {
+    "by_market_json": "by_market",
+    "by_type_json": "by_type",
+    "by_symbol_json": "by_symbol",
+    "date_range_json": "date_range",
+    "source_json": "source",
+    "markets_json": "markets",
+    "symbols_json": "symbols",
+    "schema_mapping_json": "schema_mapping",
+    "capabilities_json": "capabilities",
+    "coverage_json": "coverage",
+    "quality_report_json": "quality_report",
+}
+
+
+def _row_to_bt_dataset(row: sqlite3.Row | None) -> dict | None:
+    if not row:
+        return None
+    value = dict(row)
+    for source_key, target_key in _BT_DATASET_JSON_COLUMNS.items():
+        raw = value.pop(source_key, None)
+        value[target_key] = json.loads(raw) if raw else None
+    value["dataset_version"] = value.get("current_version")
+    return value
 
 
 def list_bt_datasets() -> list[dict]:
@@ -943,28 +1535,64 @@ def list_bt_datasets() -> list[dict]:
         rows = _get_conn().execute(
             "SELECT * FROM bt_datasets ORDER BY created_at DESC"
         ).fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        for k in ("by_market_json", "by_type_json", "by_symbol_json", "date_range_json"):
-            short = k[:-5]
-            d[short] = json.loads(d[k]) if d.get(k) else None
-            d.pop(k, None)
-        out.append(d)
-    return out
+    return [item for row in rows if (item := _row_to_bt_dataset(row)) is not None]
 
 
 def get_bt_dataset(dataset_id: str) -> dict | None:
     with _lock:
         row = _get_conn().execute("SELECT * FROM bt_datasets WHERE id=?", (dataset_id,)).fetchone()
+    return _row_to_bt_dataset(row)
+
+
+def list_bt_dataset_versions(dataset_id: str) -> list[dict]:
+    with _lock:
+        rows = _get_conn().execute(
+            "SELECT * FROM bt_dataset_versions WHERE dataset_id=? ORDER BY created_at DESC, id DESC",
+            (dataset_id,),
+        ).fetchall()
+    output: list[dict] = []
+    json_columns = {
+        "source_json": "source", "markets_json": "markets", "symbols_json": "symbols",
+        "schema_mapping_json": "schema_mapping", "capabilities_json": "capabilities",
+        "coverage_json": "coverage", "quality_report_json": "quality_report",
+    }
+    for row in rows:
+        item = dict(row)
+        for source_key, target_key in json_columns.items():
+            raw = item.pop(source_key, None)
+            item[target_key] = json.loads(raw) if raw else None
+        item["dataset_version"] = item.get("id")
+        output.append(item)
+    return output
+
+
+def get_bt_dataset_version(dataset_id: str, dataset_version: str) -> dict | None:
+    with _lock:
+        row = _get_conn().execute(
+            "SELECT * FROM bt_dataset_versions WHERE dataset_id=? AND id=?",
+            (dataset_id, dataset_version),
+        ).fetchone()
     if not row:
         return None
-    d = dict(row)
-    for k in ("by_market_json", "by_type_json", "by_symbol_json", "date_range_json"):
-        short = k[:-5]
-        d[short] = json.loads(d[k]) if d.get(k) else None
-        d.pop(k, None)
-    return d
+    return next(iter([
+        item for item in list_bt_dataset_versions(dataset_id) if item.get("id") == dataset_version
+    ]), None)
+
+
+def update_bt_dataset_labels_path(dataset_id: str, labels_path: str | None) -> dict | None:
+    with _lock:
+        conn = _get_conn()
+        cur = conn.execute(
+            "UPDATE bt_datasets SET labels_path=? WHERE id=?",
+            (labels_path, dataset_id),
+        )
+        conn.execute(
+            "UPDATE bt_dataset_versions SET labels_path=? "
+            "WHERE dataset_id=? AND id=(SELECT current_version FROM bt_datasets WHERE id=?)",
+            (labels_path, dataset_id, dataset_id),
+        )
+        conn.commit()
+    return get_bt_dataset(dataset_id) if cur.rowcount else None
 
 
 def prune_missing_bt_datasets() -> int:
@@ -972,8 +1600,14 @@ def prune_missing_bt_datasets() -> int:
     from pathlib import Path
 
     with _lock:
-        rows = _get_conn().execute("SELECT id, path FROM bt_datasets").fetchall()
-    stale = [r["id"] for r in rows if not r["path"] or not Path(r["path"]).is_file()]
+        rows = _get_conn().execute("SELECT id, path, status FROM bt_datasets").fetchall()
+    # Pending API/database contracts intentionally have no local file yet and
+    # must survive restarts. Only an entry claiming to be available is stale.
+    stale = [
+        r["id"] for r in rows
+        if str(r["status"] or "available") == "available"
+        and (not r["path"] or not Path(r["path"]).is_file())
+    ]
     if not stale:
         return 0
     with _lock:
@@ -1076,6 +1710,81 @@ def update_evolution_status(item_id: str, status: str, **kwargs) -> dict | None:
 
 # ============================================================== bt_runs.metrics_json 存取 ====
 
+def _bt_prediction_quality(
+    run_id: str,
+    *,
+    run_status: str,
+    engine_mode: str,
+    runner: str,
+) -> dict[str, Any]:
+    """Derive Run-level completion quality from persisted per-event audits.
+
+    Legacy abstentions predate ``strategy_metadata_json``.  They are counted as
+    generic invalid outputs so old Runs can still surface a useful warning
+    instead of looking silently healthy.
+    """
+    with _lock:
+        rows = _get_conn().execute(
+            "SELECT abstain,strategy_metadata_json FROM bt_predictions WHERE run_id=?",
+            (run_id,),
+        ).fetchall()
+    invalid_count = 0
+    warning_count = 0
+    voluntary_abstain_count = 0
+    insufficient_data_count = 0
+    for row in rows:
+        metadata: dict[str, Any] = {}
+        raw = row["strategy_metadata_json"] if "strategy_metadata_json" in row.keys() else None
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                metadata = parsed if isinstance(parsed, dict) else {}
+            except (json.JSONDecodeError, TypeError):
+                metadata = {}
+        validation = metadata.get("validation")
+        errors = metadata.get("output_validation_errors")
+        explicitly_invalid = bool(
+            metadata.get("prediction_status") == "invalid_output"
+            or metadata.get("output_failure_kind")
+            or metadata.get("completion_quality") == "invalid"
+            or (isinstance(validation, dict) and validation.get("valid") is False)
+            or (isinstance(errors, list) and len(errors) > 0)
+        )
+        legacy_model_abstain = bool(
+            row["abstain"]
+            and not metadata
+            and runner in {"team_prompt", "team_full"}
+        )
+        invalid = explicitly_invalid or legacy_model_abstain
+        if invalid:
+            invalid_count += 1
+            warning_count += 1
+        elif metadata.get("prediction_status") == "insufficient_data":
+            insufficient_data_count += 1
+            warning_count += 1
+        elif bool(row["abstain"]):
+            # External/imported strategies may deliberately decline a trade;
+            # that is coverage information, not a transport/validation error.
+            voluntary_abstain_count += 1
+
+    if warning_count:
+        quality = "completed_with_warnings"
+    elif rows:
+        quality = "valid"
+    elif engine_mode != "event_proxy":
+        quality = "not_applicable"
+    elif run_status in {"pending", "running", "paused"}:
+        quality = "pending"
+    else:
+        quality = "unavailable"
+    return {
+        "completion_quality": quality,
+        "warning_count": warning_count,
+        "invalid_output_count": invalid_count,
+        "voluntary_abstain_count": voluntary_abstain_count,
+        "insufficient_data_count": insufficient_data_count,
+    }
+
 def update_bt_run_metrics(run_id: str, metrics_dict: dict | None) -> dict | None:
     """将完整的 metrics_registry 结果 JSON 存入 bt_runs.metrics_json。"""
     ts = now_iso()
@@ -1096,9 +1805,18 @@ def _row_to_bt_run(row: sqlite3.Row | None) -> dict | None:
     d = dict(row)
     d["config"] = json.loads(d["config_json"]) if d.get("config_json") else None
     d["metrics"] = json.loads(d["metrics_json"]) if d.get("metrics_json") else None
+    d["execution_spec"] = json.loads(d["execution_spec_json"]) if d.get("execution_spec_json") else None
+    d["strategy_spec"] = json.loads(d["strategy_spec_json"]) if d.get("strategy_spec_json") else None
+    d["evaluation_horizon"] = _bt_run_evaluation_horizon(d)
     d["concurrency"] = int(d["concurrency"] or 2)
     d["total_events"] = int(d["total_events"] or 0)
     d["done_events"] = int(d["done_events"] or 0)
+    d.update(_bt_prediction_quality(
+        str(d.get("id") or ""),
+        run_status=str(d.get("status") or ""),
+        engine_mode=str(d.get("engine_mode") or "event_proxy"),
+        runner=str(d.get("runner") or ""),
+    ))
     return d
 
 
@@ -1156,6 +1874,8 @@ def _row_to_bt_arena(row: sqlite3.Row | None) -> dict | None:
     d.pop("run_ids_json", None)
     d["config"] = json.loads(d["config_json"]) if d.get("config_json") else None
     d.pop("config_json", None)
+    selected = d["config"].get("selected_metric_ids") if isinstance(d.get("config"), dict) else None
+    d["selected_metric_ids"] = list(selected) if isinstance(selected, list) else []
     d["result"] = json.loads(d["result_json"]) if d.get("result_json") else None
     d.pop("result_json", None)
     return d
@@ -1169,6 +1889,8 @@ def create_bt_arena(
     dataset_name: str | None = None,
     description: str | None = None,
     config: dict | None = None,
+    arena_type: str = "prediction",
+    protocol_hash: str | None = None,
     arena_id: str | None = None,
 ) -> dict:
     aid, ts = arena_id or new_id(), now_iso()
@@ -1176,10 +1898,10 @@ def create_bt_arena(
     with _lock:
         conn = _get_conn()
         conn.execute(
-            "INSERT INTO bt_arenas(id,name,dataset_id,dataset_name,run_ids_json,"
-            "description,config_json,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (aid, name, dataset_id, dataset_name, json.dumps(run_ids or [], ensure_ascii=False),
-             description, cfg_json, "ready", ts, ts),
+            "INSERT INTO bt_arenas(id,name,arena_type,protocol_hash,dataset_id,dataset_name,run_ids_json,"
+            "description,config_json,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (aid, name, arena_type, protocol_hash, dataset_id, dataset_name,
+             json.dumps(run_ids or [], ensure_ascii=False), description, cfg_json, "ready", ts, ts),
         )
         conn.commit()
     row = _get_conn().execute("SELECT * FROM bt_arenas WHERE id=?", (aid,)).fetchone()
@@ -1210,7 +1932,7 @@ def update_bt_arena_status(
     ts = now_iso()
     fields = ["status = ?", "updated_at = ?"]
     args: list[Any] = [status, ts]
-    if status in {"done", "failed"}:
+    if status in {"done", "failed", "partial", "cancelled"}:
         fields.append("finished_at = ?")
         args.append(ts)
     if result is not None:
@@ -1220,6 +1942,17 @@ def update_bt_arena_status(
     with _lock:
         conn = _get_conn()
         conn.execute(f"UPDATE bt_arenas SET {', '.join(fields)} WHERE id=?", tuple(args))
+        conn.commit()
+    return get_bt_arena(arena_id)
+
+
+def update_bt_arena_config(arena_id: str, config: dict | None) -> dict | None:
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE bt_arenas SET config_json=?, updated_at=? WHERE id=?",
+            (json.dumps(config or {}, ensure_ascii=False), now_iso(), arena_id),
+        )
         conn.commit()
     return get_bt_arena(arena_id)
 
@@ -1615,3 +2348,82 @@ def update_prospective_job(job_id: str, *, status: str, attempts: int | None = N
     args.append(job_id)
     with _lock:
         _get_conn().execute(f"UPDATE prospective_jobs SET {', '.join(fields)} WHERE id=?", tuple(args)); _get_conn().commit()
+
+
+# ------------------------------------------------------ simulation jobs ----
+
+def _decode_simulation_job(row: sqlite3.Row | None) -> Optional[dict]:
+    if row is None:
+        return None
+    data = dict(row)
+    data["request_payload"] = json.loads(data["request_payload"])
+    return data
+
+
+def create_simulation_job(
+    case_id: str,
+    graph_artifact_id: str,
+    gateway_job: dict[str, Any],
+    request_payload: dict[str, Any],
+) -> dict:
+    job_id, ts = new_id(), now_iso()
+    with _lock:
+        conn = _get_conn()
+        existing = conn.execute(
+            "SELECT * FROM simulation_jobs WHERE gateway_job_id=?",
+            (str(gateway_job["job_id"]),),
+        ).fetchone()
+        if existing:
+            return _decode_simulation_job(existing) or {}
+        conn.execute(
+            """
+            INSERT INTO simulation_jobs(
+                id,case_id,graph_artifact_id,gateway_job_id,status,stage,progress,
+                request_payload,error,artifact_id,created_at,updated_at,finished_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                job_id, case_id, graph_artifact_id, str(gateway_job["job_id"]),
+                str(gateway_job.get("status") or "queued"),
+                str(gateway_job.get("stage") or "queued"),
+                float(gateway_job.get("progress") or 0),
+                json.dumps(request_payload, ensure_ascii=False, default=str),
+                gateway_job.get("error"), None, ts, ts, gateway_job.get("finished_at"),
+            ),
+        )
+        conn.commit()
+    return get_simulation_job(job_id) or {}
+
+
+def get_simulation_job(job_id: str) -> Optional[dict]:
+    with _lock:
+        row = _get_conn().execute(
+            "SELECT * FROM simulation_jobs WHERE id=?", (job_id,)
+        ).fetchone()
+    return _decode_simulation_job(row)
+
+
+def list_simulation_jobs(case_id: str) -> list[dict]:
+    with _lock:
+        rows = _get_conn().execute(
+            "SELECT * FROM simulation_jobs WHERE case_id=? ORDER BY created_at DESC",
+            (case_id,),
+        ).fetchall()
+    return [_decode_simulation_job(row) or {} for row in rows]
+
+
+def update_simulation_job(job_id: str, **values: Any) -> Optional[dict]:
+    allowed = {"status", "stage", "progress", "error", "artifact_id", "finished_at"}
+    fields = {key: value for key, value in values.items() if key in allowed}
+    if not fields:
+        return get_simulation_job(job_id)
+    fields["updated_at"] = now_iso()
+    assignments = ",".join(f"{key}=?" for key in fields)
+    with _lock:
+        conn = _get_conn()
+        conn.execute(
+            f"UPDATE simulation_jobs SET {assignments} WHERE id=?",
+            (*fields.values(), job_id),
+        )
+        conn.commit()
+    return get_simulation_job(job_id)

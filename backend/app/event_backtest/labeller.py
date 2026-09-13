@@ -4,17 +4,20 @@ import argparse
 import datetime as dt
 import json
 import math
+import re
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from ..skills.price_data import PriceFetchError, fetch_price_frame
+from ..market_runtime import call_sina_history
+from .benchmark import ABSOLUTE_RETURN_BENCHMARK, resolve_event_benchmark
 
 try:
     import akshare as ak  # type: ignore
@@ -55,6 +58,41 @@ BENCHMARK_US_DEFAULT = "SPY"
 
 DATE_FMTS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%Y%m%d", "%Y/%m/%d")
 
+SUPPORTED_ORACLE_MARKETS = frozenset({"CN", "US", "HK", "FUTURES"})
+UNSUPPORTED_ORACLE_MARKETS = frozenset({"CRYPTO", "FX"})
+
+
+class UnsupportedOracleMarketError(ValueError):
+    """Raised when an event requests a market without a verified price adapter."""
+
+
+def _normalize_market(market: str) -> str:
+    """Return the canonical UI market name, or fail before any provider call.
+
+    Crypto and FX are deliberately rejected until a historical daily adapter is
+    configured.  Falling through to the US equity endpoint would be worse than a
+    hard failure because it can silently attach prices for an unrelated ticker.
+    """
+    value = str(market or "").strip().upper()
+    aliases = {
+        "A_SHARE": "CN", "A-SHARE": "CN", "CHINA": "CN",
+        "USA": "US", "NASDAQ": "US", "NYSE": "US",
+        "HONGKONG": "HK", "HONG_KONG": "HK",
+        "FUTURE": "FUTURES", "FUT": "FUTURES",
+    }
+    value = aliases.get(value, value)
+    if value in SUPPORTED_ORACLE_MARKETS:
+        return value
+    if value in UNSUPPORTED_ORACLE_MARKETS:
+        raise UnsupportedOracleMarketError(
+            f"Oracle 暂不支持 {value} 历史行情；当前仅支持 CN/US/HK/FUTURES。"
+            "请接入并校验专用行情源后再生成标签，系统不会用美股或模拟价格代替。"
+        )
+    raise UnsupportedOracleMarketError(
+        f"未知市场 {value or '<empty>'}；Oracle 当前仅支持 CN/US/HK/FUTURES，"
+        "且不会猜测行情路由。"
+    )
+
 
 # -------------------- AKSHARE (CN 行情) --------------------
 def _ak_cn_hist(symbol: str, start_date: str, end_date: str, *, retries: int = 4, sleep_s: float = 0.9):
@@ -83,7 +121,7 @@ def _ak_cn_hist(symbol: str, start_date: str, end_date: str, *, retries: int = 4
         try:
             time.sleep(sleep_s + 0.4 * (attempt - 1))
             # 主方案：stock_zh_a_daily (Sina, 前复权) —— 与 event_study_skill 对齐
-            df = ak.stock_zh_a_daily(symbol=prefixed, adjust="qfq")
+            df = call_sina_history(ak.stock_zh_a_daily, symbol=prefixed, adjust="qfq")
             ok_df = df is not None and len(df) > 0 and "date" in df.columns and "close" in df.columns
             # 备用：stock_zh_a_hist_tx (Tencent)
             if not ok_df and hasattr(ak, "stock_zh_a_hist_tx"):
@@ -163,7 +201,7 @@ def _ak_cn_index_hist(benchmark_code: str, start_date: str, end_date: str, *, re
                 # fund_etf_hist_em 空 → fallback stock_zh_index_daily
                 if prefix and root:
                     try:
-                        df2 = ak.stock_zh_index_daily(symbol=f"{prefix}{root}")
+                        df2 = call_sina_history(ak.stock_zh_index_daily, symbol=f"{prefix}{root}")
                         if df2 is not None and len(df2) > 0 and "date" in df2.columns and "close" in df2.columns:
                             df2["date"] = pd.to_datetime(df2["date"]).dt.date
                             s2 = df2.set_index("date")["close"].sort_index().astype(float)
@@ -216,7 +254,7 @@ def _ak_cn_index_hist_noetf(code: str, start_date: str, end_date: str, *, retrie
         for attempt in range(1, int(retries) + 1):
             try:
                 time.sleep(sleep_s + 0.4 * (attempt - 1))
-                df = ak.stock_zh_index_daily(symbol=code)
+                df = call_sina_history(ak.stock_zh_index_daily, symbol=code)
                 if df is None or len(df) == 0 or "date" not in df.columns:
                     last_err = ValueError("empty index resp"); continue
                 df["date"] = pd.to_datetime(df["date"]).dt.date
@@ -255,7 +293,7 @@ def _ak_us_hist(symbol: str, start_date: str, end_date: str, *, retries: int = 4
     for attempt in range(1, int(retries) + 1):
         try:
             time.sleep(sleep_s + 0.5 * (attempt - 1))
-            df = ak.stock_us_daily(symbol=code, adjust="qfq")
+            df = call_sina_history(ak.stock_us_daily, symbol=code, adjust="qfq")
             if df is None or len(df) == 0 or "date" not in df.columns or "close" not in df.columns:
                 last_err = ValueError(f"empty us resp len={0 if df is None else len(df)}")
                 continue
@@ -279,23 +317,221 @@ def _ak_us_hist(symbol: str, start_date: str, end_date: str, *, retries: int = 4
     return None
 
 
-def _parse_date(s) -> Optional[dt.date]:
+def _close_series_from_frame(
+    frame: pd.DataFrame,
+    start_date: str,
+    end_date: str,
+    *,
+    date_columns: tuple[str, ...] = ("date", "日期"),
+    close_columns: tuple[str, ...] = ("close", "收盘", "收盘价", "latest"),
+) -> Optional[pd.Series]:
+    """Normalize an AkShare daily frame without assuming one provider schema."""
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return None
+    df = frame.copy()
+    date_column = next((name for name in date_columns if name in df.columns), None)
+    close_column = next((name for name in close_columns if name in df.columns), None)
+    if close_column is None:
+        return None
+    raw_dates = df[date_column] if date_column is not None else pd.Series(df.index, index=df.index)
+    parsed_dates = pd.to_datetime(raw_dates, errors="coerce")
+    values = pd.to_numeric(df[close_column], errors="coerce")
+    normalized = pd.DataFrame({
+        "date": pd.Series(parsed_dates).reset_index(drop=True),
+        "close": pd.Series(values).reset_index(drop=True),
+    }).dropna(subset=["date", "close"])
+    if normalized.empty:
+        return None
+    normalized["date"] = normalized["date"].dt.date
+    sd_d = dt.date.fromisoformat(start_date)
+    ed_d = dt.date.fromisoformat(end_date)
+    normalized = normalized[
+        (normalized["date"] >= sd_d) & (normalized["date"] <= ed_d)
+    ]
+    if normalized.empty:
+        return None
+    series = normalized.set_index("date")["close"].sort_index().astype(float)
+    series = series[~series.index.duplicated(keep="last")]
+    series = series[np.isfinite(series.to_numpy(dtype=float))]
+    return series if len(series) else None
+
+
+def _normalize_hk_symbol(symbol: str) -> str:
+    """Normalize common HK equity spellings to AkShare's five-digit code."""
+    value = str(symbol or "").strip().upper()
+    value = re.sub(r"^(?:HK[.:]?)", "", value)
+    value = re.sub(r"(?:[.]HK)$", "", value)
+    if not value.isdigit() or len(value) > 5:
+        raise ValueError(f"无效港股代码 {symbol!r}；请使用 5 位代码，例如 00700")
+    return value.zfill(5)
+
+
+def _normalize_futures_symbol(symbol: str) -> str:
+    """Normalize a domestic futures contract/main-continuous symbol."""
+    value = str(symbol or "").strip().upper().replace(" ", "")
+    if not re.fullmatch(r"[A-Z]{1,4}[0-9]{1,4}", value):
+        raise ValueError(
+            f"无效期货代码 {symbol!r}；请使用 AkShare/Sina 合约格式，例如 RB0、IF0、CU2501"
+        )
+    return value
+
+
+def _ak_hk_hist(symbol: str, start_date: str, end_date: str, *, retries: int = 3, sleep_s: float = 0.9):
+    """HK equity daily close via AkShare, with an independent Sina fallback."""
+    if ak is None:
+        return None
+    code = _normalize_hk_symbol(symbol)
+    start_compact = start_date.replace("-", "")
+    end_compact = end_date.replace("-", "")
+    last_err: Optional[Exception] = None
+    for attempt in range(1, int(retries) + 1):
+        time.sleep(sleep_s + 0.4 * (attempt - 1))
+        if hasattr(ak, "stock_hk_hist"):
+            try:
+                df = ak.stock_hk_hist(
+                    symbol=code,
+                    period="daily",
+                    start_date=start_compact,
+                    end_date=end_compact,
+                    adjust="qfq",
+                )
+                series = _close_series_from_frame(df, start_date, end_date)
+                if series is not None:
+                    return series
+            except Exception as exc:
+                last_err = exc
+        if hasattr(ak, "stock_hk_daily"):
+            try:
+                df = call_sina_history(ak.stock_hk_daily, symbol=code, adjust="qfq")
+                series = _close_series_from_frame(df, start_date, end_date)
+                if series is not None:
+                    return series
+            except Exception as exc:
+                last_err = exc
+        if last_err is None:
+            last_err = ValueError("港股主数据源与备用源均为空")
+        if attempt < int(retries):
+            time.sleep(sleep_s * attempt)
+    if last_err is not None:
+        print(f"[WARN] ak hk {code} all attempts fail: {type(last_err).__name__}: {last_err}")
+    return None
+
+
+def _ak_hk_index_hist(symbol: str, start_date: str, end_date: str, *, retries: int = 3, sleep_s: float = 0.9):
+    """HK index daily close (for example HSI/HSTECH) via verified index APIs."""
+    if ak is None:
+        return None
+    code = str(symbol or "").strip().upper()
+    if not re.fullmatch(r"[A-Z0-9]{2,16}", code):
+        raise ValueError(f"无效港股指数代码 {symbol!r}")
+    last_err: Optional[Exception] = None
+    for attempt in range(1, int(retries) + 1):
+        time.sleep(sleep_s + 0.4 * (attempt - 1))
+        if hasattr(ak, "stock_hk_index_daily_sina"):
+            try:
+                df = ak.stock_hk_index_daily_sina(symbol=code)
+                series = _close_series_from_frame(df, start_date, end_date)
+                if series is not None:
+                    return series
+            except Exception as exc:
+                last_err = exc
+        if hasattr(ak, "stock_hk_index_daily_em"):
+            try:
+                df = ak.stock_hk_index_daily_em(symbol=code)
+                series = _close_series_from_frame(df, start_date, end_date)
+                if series is not None:
+                    return series
+            except Exception as exc:
+                last_err = exc
+        if last_err is None:
+            last_err = ValueError("港股指数主数据源与备用源均为空")
+        if attempt < int(retries):
+            time.sleep(sleep_s * attempt)
+    if last_err is not None:
+        print(f"[WARN] ak hk-index {code} all attempts fail: {type(last_err).__name__}: {last_err}")
+    return None
+
+
+def _ak_futures_hist(symbol: str, start_date: str, end_date: str, *, retries: int = 3, sleep_s: float = 0.9):
+    """Domestic futures daily close, preferring the main-continuous API."""
+    if ak is None:
+        return None
+    code = _normalize_futures_symbol(symbol)
+    start_compact = start_date.replace("-", "")
+    end_compact = end_date.replace("-", "")
+    last_err: Optional[Exception] = None
+    for attempt in range(1, int(retries) + 1):
+        time.sleep(sleep_s + 0.4 * (attempt - 1))
+        if hasattr(ak, "futures_main_sina"):
+            try:
+                df = ak.futures_main_sina(
+                    symbol=code,
+                    start_date=start_compact,
+                    end_date=end_compact,
+                )
+                series = _close_series_from_frame(df, start_date, end_date)
+                if series is not None:
+                    return series
+            except Exception as exc:
+                last_err = exc
+        if hasattr(ak, "futures_zh_daily_sina"):
+            try:
+                df = ak.futures_zh_daily_sina(symbol=code)
+                series = _close_series_from_frame(df, start_date, end_date)
+                if series is not None:
+                    return series
+            except Exception as exc:
+                last_err = exc
+        if last_err is None:
+            last_err = ValueError("期货主力连续与品种日线数据源均为空")
+        if attempt < int(retries):
+            time.sleep(sleep_s * attempt)
+    if last_err is not None:
+        print(f"[WARN] ak futures {code} all attempts fail: {type(last_err).__name__}: {last_err}")
+    return None
+
+
+MARKET_TIMEZONES = {
+    "CN": "Asia/Shanghai",
+    "HK": "Asia/Hong_Kong",
+    "FUTURES": "Asia/Shanghai",
+    "US": "America/New_York",
+}
+
+
+def _event_datetime_in_market(s, market: str = "") -> Optional[dt.datetime]:
+    if isinstance(s, dt.datetime):
+        parsed = s
+    else:
+        value = str(s or "").strip()
+        if not value:
+            return None
+        try:
+            parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except Exception:
+            parsed = None
+            for fmt in DATE_FMTS:
+                try:
+                    parsed = dt.datetime.strptime(value, fmt)
+                    break
+                except Exception:
+                    continue
+            if parsed is None:
+                return None
+    if parsed.tzinfo is not None:
+        timezone_name = MARKET_TIMEZONES.get(str(market or "").strip().upper())
+        if timezone_name:
+            parsed = parsed.astimezone(ZoneInfo(timezone_name))
+    return parsed
+
+
+def _parse_date(s, market: str = "") -> Optional[dt.date]:
     if s is None or (isinstance(s, float) and math.isnan(s)):
         return None
-    if isinstance(s, (dt.date, dt.datetime)):
-        return s.date() if hasattr(s, "date") else s
-    s = str(s).strip()
-    if not s:
-        return None
-    for fmt in DATE_FMTS:
-        try:
-            return dt.datetime.strptime(s[: len(fmt) + 6], fmt).date()
-        except Exception:
-            continue
-    try:
-        return dt.datetime.fromisoformat(s).date()
-    except Exception:
-        return None
+    if isinstance(s, dt.date) and not isinstance(s, dt.datetime):
+        return s
+    parsed = _event_datetime_in_market(s, market)
+    return parsed.date() if parsed is not None else None
 
 
 def _yf_ticker_for(symbol: str, market: str, benchmark: Optional[str]) -> str:
@@ -307,7 +543,10 @@ def _yf_ticker_for(symbol: str, market: str, benchmark: Optional[str]) -> str:
           * 6 位 ETF 数字前缀（51/56/58/15 开头）
           * 6 位指数代码（000/399/88 开头）
       - US → 原样大写
+      - HK → 5 位股票代码 + .HK；指数保留 HSI/HSTECH 等代码
+      - FUTURES → AkShare/Sina 合约代码（RB0/IF0/CU2501）
     """
+    market = _normalize_market(market)
     symbol = str(symbol or "").strip()
     if market == "CN":
         # 先剥字母前缀：SH510300 / sz399006 → (prefix, 6-digit root)
@@ -369,16 +608,39 @@ def _yf_ticker_for(symbol: str, market: str, benchmark: Optional[str]) -> str:
             return f"sh{stripped[:6]}"
         return f"{symbol}.SS"
     if market == "US":
+        if not symbol:
+            raise ValueError("美股代码不能为空")
         return symbol.upper()
-    return symbol.upper()
+    if market == "HK":
+        raw = symbol.upper()
+        numeric = re.sub(r"^(?:HK[.:]?)", "", raw)
+        numeric = re.sub(r"(?:[.]HK)$", "", numeric)
+        if numeric.isdigit():
+            return f"{_normalize_hk_symbol(raw)}.HK"
+        if re.fullmatch(r"[A-Z][A-Z0-9]{1,15}", raw):
+            return raw
+        raise ValueError(f"无效港股或港股指数代码 {symbol!r}")
+    if market == "FUTURES":
+        return _normalize_futures_symbol(symbol)
+    # _normalize_market has already rejected CRYPTO/FX/unknown markets.
+    raise UnsupportedOracleMarketError(f"Oracle 未配置市场 {market} 的行情路由")
 
 
-def _yf_benchmark_for(benchmark: Optional[str], market: str) -> str:
-    bm = str(benchmark or "").strip().lower()
+def _yf_benchmark_for(benchmark: Optional[str], market: str) -> Optional[str]:
+    market = _normalize_market(market)
+    resolved = resolve_event_benchmark(market, benchmark)
+    bm = resolved.strip().lower()
+    if bm == ABSOLUTE_RETURN_BENCHMARK:
+        return None
     if market == "CN":
+        # UI/common vendor spelling: 000300.SH / 000905.SH.
+        suffix_match = re.fullmatch(r"(\d{6})[.](sh|sz)", bm)
+        if suffix_match:
+            root, exchange = suffix_match.groups()
+            return f"{exchange}{root}"
         # 先处理 akshare 指数直连形式：sh/sz + 6 位代码（不再强制转 ETF 代理，ETF 代理实际常缺数据）
         if len(bm) == 8 and bm[:2] in {"sh", "sz"} and bm[2:].isdigit():
-            return benchmark  # 原样：sh000300 / sz399006 等 → cn_index_map 处理 → _ak_cn_index_hist 通
+            return resolved  # sh000300 / sz399006 等 → cn_index_map 处理 → _ak_cn_index_hist 通
         if bm in {"sh000300", "sz399300", "399300"}:
             return "sh000300"  # 沪深300 指数代码（ak.stock_zh_index_daily），不绕 ETF 510300.SS
         # 形如 sz399001 / sh000001 等老指数代码无 sh/sz 前缀的：如果是 6 位纯数字 → 如果是 000/399 开头指数补 sz，000001 可 sh；默认返回已知格式；未知 6 位纯数字：先走 CN 指数分支再兜底
@@ -392,10 +654,66 @@ def _yf_benchmark_for(benchmark: Optional[str], market: str) -> str:
             return bm.upper()
         # 还没命中 → 默认沪深300指数 sh000300
         return "sh000300"
-    # US
-    if bm in {"spy", "qqq", "dji", "iwm"}:
-        return benchmark.upper()
-    return "SPY"
+    if market == "US":
+        return resolved.upper()
+    if market == "HK":
+        # No implicit SPY: cross-market subtraction would be economically invalid.
+        numeric = re.sub(r"^(?:hk[.:]?)", "", bm, flags=re.IGNORECASE)
+        numeric = re.sub(r"(?:[.]hk)$", "", numeric, flags=re.IGNORECASE)
+        if numeric.isdigit():
+            return f"{_normalize_hk_symbol(bm)}.HK"
+        value = bm.upper()
+        if not re.fullmatch(r"[A-Z][A-Z0-9]{1,15}", value):
+            raise ValueError(f"无效港股基准代码 {benchmark!r}")
+        return value
+    if market == "FUTURES":
+        # Futures do not have one universal benchmark. Missing benchmark means
+        # the Oracle labels the asset's own realized return.
+        return _normalize_futures_symbol(resolved)
+    raise UnsupportedOracleMarketError(f"Oracle 未配置市场 {market} 的基准路由")
+
+
+@dataclass(frozen=True)
+class _PriceRoute:
+    provider: str
+    symbol: str
+    canonical: str
+
+    @property
+    def cache_key(self) -> tuple[str, str]:
+        return self.provider, self.symbol
+
+
+def _price_route_for(canonical_ticker: str, market: str) -> _PriceRoute:
+    """Classify a canonical ticker using its declared market, never its shape alone."""
+    market = _normalize_market(market)
+    ticker = str(canonical_ticker or "").strip()
+    if market == "US":
+        return _PriceRoute("us", ticker.upper(), ticker.upper())
+    if market == "HK":
+        if ticker.upper().endswith(".HK"):
+            code = _normalize_hk_symbol(ticker)
+            return _PriceRoute("hk", code, f"{code}.HK")
+        index_code = ticker.upper()
+        return _PriceRoute("hk_index", index_code, index_code)
+    if market == "FUTURES":
+        code = _normalize_futures_symbol(ticker)
+        return _PriceRoute("futures", code, code)
+    if market != "CN":
+        raise UnsupportedOracleMarketError(f"Oracle 未配置市场 {market} 的行情路由")
+
+    lower = ticker.lower()
+    if len(lower) == 8 and lower[:2] in {"sh", "sz"} and lower[2:].isdigit():
+        return _PriceRoute("cn_index", lower, lower)
+    if (ticker.endswith(".SS") or ticker.endswith(".SZ")) and len(ticker) == 9 and ticker[:6].isdigit():
+        root = ticker[:6]
+        if root.startswith(("51", "56", "58", "15", "399", "880", "881")):
+            prefix = "sz" if root.startswith(("15", "399")) else "sh"
+            return _PriceRoute("cn_index", f"{prefix}{root}", ticker)
+        return _PriceRoute("cn_asset", root, ticker)
+    if len(ticker) == 6 and ticker.isdigit():
+        return _PriceRoute("cn_index", ticker, ticker)
+    raise ValueError(f"无法识别 CN 行情代码 {canonical_ticker!r}")
 
 
 @dataclass
@@ -417,18 +735,22 @@ def load_events(path) -> list[RawEvent]:
             if not s:
                 continue
             d = json.loads(s)
-            ed = _parse_date(d.get("event_time"))
+            market = str(d.get("market") or "")
+            # Oracle anchoring starts when the strategy could observe the
+            # information, not when the underlying event economically occurred.
+            decision_time = d.get("available_time") or d.get("available_at") or d.get("event_time")
+            ed = _parse_date(decision_time, market)
             if ed is None:
                 continue
             rows.append(
                 RawEvent(
                     event_id=str(d.get("event_id") or ""),
-                    market=str(d.get("market") or ""),
+                    market=market,
                     symbol=str(d.get("symbol") or ""),
                     event_date=ed,
                     event_type_l2=str(d.get("event_type_l2") or ""),
                     benchmark=d.get("benchmark"),
-                    event_time_raw=str(d.get("event_time") or ""),
+                    event_time_raw=str(decision_time or ""),
                 )
             )
     return rows
@@ -518,30 +840,25 @@ def _announcement_tier(event_time_str: str, market: str) -> str:
     判断公告时段：返回 "pre_open" / "intraday" / "post_close"
     - CN: pre_open < 09:30, intraday = [09:30, 15:00), post_close >= 15:00
     - US: pre_open < 09:30, intraday = [09:30, 16:00), post_close >= 16:00
-    - 无时间组件 / 不可解析 -> "intraday"（最安全，不偏移 T0）
+    - 无时间组件 / 不可解析 -> "unknown"（按下一交易日收盘保守锚定）
     """
     s = str(event_time_str or "").strip()
     if not s:
-        return "intraday"
+        return "unknown"
     # 检测是否含时间组件：ISO datetime 用 'T' 分隔；也兼容空格分隔的 "YYYY-MM-DD HH:MM:SS"
     # date-only 如 "2025-01-10" / "20250110" / "2025/01/10" -> 当作无时间组件
     has_time = ("T" in s) or ("t" in s) or (len(s) > 10 and ":" in s[10:])
     if not has_time:
-        return "intraday"
-    t = None
-    try:
-        obj = dt.datetime.fromisoformat(s)
-        t = obj.time()
-    except Exception:
-        # 不可解析 -> 当作无时间组件
-        return "intraday"
-    if t is None:
-        return "intraday"
+        return "unknown"
+    obj = _event_datetime_in_market(s, market)
+    if obj is None:
+        return "unknown"
+    t = obj.time()
     mkt = (market or "").upper()
-    if mkt == "CN":
+    if mkt in {"CN", "FUTURES"}:
         open_t = dt.time(9, 30)
         close_t = dt.time(15, 0)
-    else:  # US / 未知 -> 用 US 时间
+    else:  # US / HK / 未知
         open_t = dt.time(9, 30)
         close_t = dt.time(16, 0)
     if t < open_t:
@@ -549,6 +866,50 @@ def _announcement_tier(event_time_str: str, market: str) -> str:
     if t >= close_t:
         return "post_close"
     return "intraday"
+
+
+def _event_anchor_dates(
+    closes: pd.Series,
+    event_date: dt.date,
+    window: int,
+    event_time_raw: str = "",
+    market: str = "",
+) -> Optional[tuple[dt.date, dt.date, int, int]]:
+    """Resolve the information-safe close-to-close Oracle window.
+
+    Pre-open/intraday information enters at that trading day's close. Post-close
+    (or date-only, whose publication time is unknown) enters at the next trading
+    close. A weekend/holiday already maps to the first later trading day and must
+    not be shifted a second time.
+    """
+    if closes is None or len(closes) == 0 or int(window) < 1:
+        return None
+    dates_avail = sorted(closes.index)
+    t0_candidates = [d for d in dates_avail if d >= event_date]
+    if not t0_candidates:
+        return None
+    t0 = t0_candidates[0]
+    t0_idx = dates_avail.index(t0)
+    tier = _announcement_tier(event_time_raw, market)
+    if tier in {"post_close", "unknown"} and t0 == event_date:
+        if t0_idx + 1 >= len(dates_avail):
+            return None
+        t0_idx += 1
+        t0 = dates_avail[t0_idx]
+    tN_idx = t0_idx + int(window)
+    if tN_idx >= len(dates_avail):
+        return None
+    return t0, dates_avail[tN_idx], t0_idx, tN_idx
+
+
+def _return_between(closes: Optional[pd.Series], start: dt.date, end: dt.date) -> Optional[float]:
+    if closes is None or start not in closes.index or end not in closes.index:
+        return None
+    p0 = float(closes.loc[start])
+    pN = float(closes.loc[end])
+    if not p0 or not math.isfinite(p0) or not math.isfinite(pN):
+        return None
+    return (pN / p0) - 1.0
 
 
 def _car(closes: pd.Series, event_date: dt.date, window: int,
@@ -560,71 +921,47 @@ def _car(closes: pd.Series, event_date: dt.date, window: int,
     """
     if closes is None or len(closes) == 0:
         return None
-    dates_avail = sorted(closes.index)
-    # pick first trading date >= event_date
-    t0_candidates = [d for d in dates_avail if d >= event_date]
-    if not t0_candidates:
+    anchors = _event_anchor_dates(closes, event_date, window, event_time_raw, market)
+    if anchors is None:
         return None
-    t0 = t0_candidates[0]
-    t0_idx = dates_avail.index(t0)
-    # post_close 公告：市场反应发生在下一交易日
-    if _announcement_tier(event_time_raw, market) == "post_close":
-        if t0_idx + 1 >= len(dates_avail):
-            return None
-        t0 = dates_avail[t0_idx + 1]
-        t0_idx = t0_idx + 1
-    tN_idx = t0_idx + window
-    if tN_idx >= len(dates_avail):
-        return None
-    p0 = float(closes.loc[t0])
-    pN = float(closes.loc[dates_avail[tN_idx]])
-    if not p0 or not math.isfinite(p0) or not math.isfinite(pN):
-        return None
-    return (pN / p0) - 1.0
+    t0, tN, _, _ = anchors
+    return _return_between(closes, t0, tN)
 
 
-def _market_model_car(stock_closes: pd.Series, index_closes: pd.Series,
+def _market_model_car_with_method(stock_closes: pd.Series, index_closes: pd.Series,
                       event_date: dt.date, window: int,
                       event_time_raw: str = "", market: str = ""
-                      ) -> tuple[Optional[float], Optional[float], Optional[float]]:
+                      ) -> tuple[Optional[float], Optional[float], Optional[float], Optional[str]]:
     """
     市场模型 CAR（OLS 估计 α/β，替代 β≡1 的简单减法）：
     - T0 同 _car 的 post_close 偏移规则
     - 估计窗口: [T0-120, T0-21] 交易日（100 个）
-    - 事件窗口: [T0, T0+window]，AR_t = r_stock_t - (α̂ + β̂ * r_index_t)
-    - CAR = Σ AR_t（共 window+1 项）
+    - 事件窗口: (T0, T0+window]，AR_t = r_stock_t - (α̂ + β̂ * r_index_t)
+    - CAR = Σ AR_t（共 window 项，与 close(T0)→close(T+N) 端点口径一致）
     - σ(AR) 取自估计窗口残差
-    - t_stat = CAR / (σ_AR * sqrt(window+1))
+    - t_stat = CAR / (σ_AR * sqrt(window))
     - p_value = 2 * (1 - Φ(|t_stat|))，Φ 用 math.erf 近似
     - 估计窗口数据 < 30 -> 退回端点法 CAR = (pN/p0 - 1) - (bmN/bm0 - 1)，t_stat=p_value=None
-    - 数据缺失 -> 返回 (None, None, None)
+    - 返回 (CAR, t_stat, p_value, 实际计算方法)；数据缺失时全部为 None
     """
-    empty: tuple[Optional[float], Optional[float], Optional[float]] = (None, None, None)
+    empty = (None, None, None, None)
     if stock_closes is None or index_closes is None or len(stock_closes) == 0 or len(index_closes) == 0:
         return empty
 
-    tier = _announcement_tier(event_time_raw, market)
     dates_avail = sorted(stock_closes.index)
-    t0_candidates = [d for d in dates_avail if d >= event_date]
-    if not t0_candidates:
+    anchors = _event_anchor_dates(stock_closes, event_date, window, event_time_raw, market)
+    if anchors is None:
         return empty
-    t0 = t0_candidates[0]
-    t0_idx = dates_avail.index(t0)
-    if tier == "post_close":
-        if t0_idx + 1 >= len(dates_avail):
-            return empty
-        t0 = dates_avail[t0_idx + 1]
-        t0_idx = t0_idx + 1
-    tN_idx = t0_idx + window
-    if tN_idx >= len(dates_avail):
-        return empty
+    t0, tN, t0_idx, tN_idx = anchors
 
-    def _fallback_endpoint() -> tuple[Optional[float], Optional[float], Optional[float]]:
-        r_a = _car(stock_closes, event_date, window, event_time_raw, market)
-        r_b = _car(index_closes, event_date, window, event_time_raw, market)
+    def _fallback_endpoint() -> tuple[Optional[float], Optional[float], Optional[float], Optional[str]]:
+        r_a = _return_between(stock_closes, t0, tN)
+        # Require the exact asset anchor dates. Subtracting benchmark returns
+        # over a different calendar (e.g. after a suspension) is invalid.
+        r_b = _return_between(index_closes, t0, tN)
         if r_a is None or r_b is None:
             return empty
-        return (r_a - r_b, None, None)
+        return (r_a - r_b, None, None, "benchmark_relative_return")
 
     # 估计窗口 [t0_idx-120, t0_idx-21] 闭区间（100 个交易日）
     est_lo = t0_idx - 120
@@ -669,28 +1006,26 @@ def _market_model_car(stock_closes: pd.Series, index_closes: pd.Series,
     if not math.isfinite(sigma_ar) or sigma_ar <= 0.0:
         return _fallback_endpoint()
 
-    # 事件窗口 [T0, T0+window] -> 需要 window+1 个 AR -> 收盘价 T0-1 ~ T0+window（共 window+2 个）
-    if t0_idx - 1 < 0:
-        return _fallback_endpoint()
-    ev_price_dates = dates_avail[t0_idx - 1 : tN_idx + 1]
-    if len(ev_price_dates) < window + 2:
+    # close(T0) -> close(T+N): N returns from N+1 close observations.
+    ev_price_dates = dates_avail[t0_idx : tN_idx + 1]
+    if len(ev_price_dates) < window + 1:
         return _fallback_endpoint()
     stock_ev = stock_closes.reindex(ev_price_dates).dropna()
     index_ev = index_closes.reindex(ev_price_dates).dropna()
     common_ev = stock_ev.index.intersection(index_ev.index)
-    if len(common_ev) < window + 2:
+    if len(common_ev) < window + 1:
         return _fallback_endpoint()
     stock_ev = stock_ev.loc[common_ev]
     index_ev = index_ev.loc[common_ev]
-    r_stock_ev = stock_ev.pct_change().dropna().to_numpy(dtype=float)  # window+1 returns
+    r_stock_ev = stock_ev.pct_change().dropna().to_numpy(dtype=float)  # window returns
     r_index_ev = index_ev.pct_change().dropna().to_numpy(dtype=float)
-    if len(r_stock_ev) != window + 1 or len(r_index_ev) != window + 1:
+    if len(r_stock_ev) != window or len(r_index_ev) != window:
         return _fallback_endpoint()
     ar_ev = r_stock_ev - (alpha + beta * r_index_ev)
     car = float(np.sum(ar_ev))
-    denom = sigma_ar * math.sqrt(window + 1)
+    denom = sigma_ar * math.sqrt(window)
     if not math.isfinite(denom) or denom <= 0:
-        return car, None, None
+        return car, None, None, "market_model"
     t_stat = car / denom
     # p_value = 2 * (1 - Φ(|t|))，Φ 用 math.erf 近似
     p_value = 2.0 * (1.0 - 0.5 * (1.0 + math.erf(abs(t_stat) / math.sqrt(2.0))))
@@ -698,13 +1033,29 @@ def _market_model_car(stock_closes: pd.Series, index_closes: pd.Series,
         p_value = 0.0
     elif p_value > 1.0:
         p_value = 1.0
-    return car, float(t_stat), float(p_value)
+    return car, float(t_stat), float(p_value), "market_model"
+
+
+def _market_model_car(stock_closes: pd.Series, index_closes: pd.Series,
+                      event_date: dt.date, window: int,
+                      event_time_raw: str = "", market: str = ""
+                      ) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    """Compatibility entry point for explicit OLS callers."""
+    car, t_stat, p_value, _ = _market_model_car_with_method(
+        stock_closes, index_closes, event_date, window, event_time_raw, market,
+    )
+    return car, t_stat, p_value
 
 
 def _compute_cars_for_events(
     events: list[RawEvent],
+    *, car_method: str = "benchmark_relative_return",
 ) -> dict[tuple, dict]:
     """
+    New labels use endpoint benchmark-relative returns, matching the prediction
+    prompt. OLS is opt-in; its actual method is tracked per horizon so an
+    endpoint fallback is never mislabeled as an OLS result.
+
     returns: {(event_id, market, symbol): {
         "t1": float|None, "t3": float|None, "t5": float|None,
         "bm_t1": ..., "bm_t3": ..., "bm_t5": ...,
@@ -712,143 +1063,87 @@ def _compute_cars_for_events(
         "asset_ticker": str, "benchmark_ticker": str,
     }}
     """
-    asset_tickers = {}
-    bm_tickers = {}
-    for e in events:
-        asset_tickers[(e.event_id, e.market, e.symbol)] = _yf_ticker_for(e.symbol, e.market, e.benchmark)
-        bm_tickers[(e.event_id, e.market, e.symbol)] = _yf_benchmark_for(e.benchmark, e.market)
-
-    all_tickers = set(asset_tickers.values()) | set(bm_tickers.values())
-    # expand download window: 200 calendar days before earliest event (estimation window needs ~120 trading days),
-    # latest event_date + 150 days for up to T+60 horizon (≈84 trading days ≈ 120 calendar days)
+    if car_method not in {"benchmark_relative_return", "market_model"}:
+        raise ValueError("car_method must be benchmark_relative_return or market_model")
     if not events:
         return {}
+
+    # Validate and route the complete batch before touching a remote provider.
+    # CRYPTO/FX therefore fail atomically instead of producing partial labels.
+    asset_routes: dict[tuple, _PriceRoute] = {}
+    benchmark_routes: dict[tuple, Optional[_PriceRoute]] = {}
+    unique_routes: dict[tuple[str, str], _PriceRoute] = {}
+    for e in events:
+        market = _normalize_market(e.market)
+        key = (e.event_id, e.market, e.symbol)
+        asset_ticker = _yf_ticker_for(e.symbol, market, e.benchmark)
+        asset_route = _price_route_for(asset_ticker, market)
+        benchmark_ticker = _yf_benchmark_for(e.benchmark, market)
+        benchmark_route = (
+            _price_route_for(benchmark_ticker, market) if benchmark_ticker else None
+        )
+        asset_routes[key] = asset_route
+        benchmark_routes[key] = benchmark_route
+        unique_routes[asset_route.cache_key] = asset_route
+        if benchmark_route is not None:
+            unique_routes[benchmark_route.cache_key] = benchmark_route
+
+    # Market-model estimation needs ~120 trading days before T0; T+60 needs
+    # roughly another 120 calendar days after the latest event.
     earliest = min(e.event_date for e in events) - dt.timedelta(days=200)
     latest = max(e.event_date for e in events) + dt.timedelta(days=150)
     sd_iso = earliest.isoformat()
     ed_iso = latest.isoformat()
 
-    print(f"[INFO] Close universe: {len(all_tickers)} tickers; window {sd_iso} ~ {ed_iso}")
-    closes_by_ticker: dict[str, pd.Series] = {}
+    by_provider = Counter(route.provider for route in unique_routes.values())
+    print(
+        f"[INFO] Close universe: {len(unique_routes)} routes {dict(by_provider)}; "
+        f"window {sd_iso} ~ {ed_iso}"
+    )
+    fetchers = {
+        "us": _ak_us_hist,
+        "cn_asset": _ak_cn_hist,
+        "cn_index": _ak_cn_index_hist,
+        "hk": _ak_hk_hist,
+        "hk_index": _ak_hk_index_hist,
+        "futures": _ak_futures_hist,
+    }
+    closes_by_route: dict[tuple[str, str], pd.Series] = {}
+    for index, route in enumerate(unique_routes.values(), start=1):
+        series = fetchers[route.provider](route.symbol, sd_iso, ed_iso)
+        if series is not None and len(series) > 0:
+            closes_by_route[route.cache_key] = series
+        print(
+            f"[PROG] Oracle prices {index}/{len(unique_routes)} "
+            f"provider={route.provider} coverage={len(closes_by_route)}/{len(unique_routes)}"
+        )
 
-    def shared_close(symbol: str, market: str) -> Optional[pd.Series]:
-        """Use the same stock/ETF/index provider waterfall as research skills."""
-        try:
-            fetched = fetch_price_frame(
-                symbol,
-                sd_iso,
-                ed_iso,
-                market=market,
-                adjust="qfq",
-            )
-        except (PriceFetchError, ValueError) as exc:
-            print(f"[WARN] shared price route {market} {symbol}: {exc}")
-            return None
-        df = fetched.frame
-        dates = pd.to_datetime(df["date"], errors="coerce").dt.date
-        series = pd.Series(df["close"].astype(float).values, index=dates)
-        return series[~series.index.duplicated()].sort_index()
-
-    # ===== 分类 =====
-    # US 资产（非 .SS/.SZ 的非 9 位格式，例如 SPY, QQQ, AAPL, NFLX, AMZN）
-    us_map: dict[str, str] = {}
-    # CN 个股（600519.SS / 000001.SZ → 6 位纯数字 root，给 stock_zh_a_hist）
-    cn_asset_map: dict[str, str] = {}
-    # CN 指数 / ETF（sh000300 / sz399006 / 6 位纯数字 ETF，给 stock_zh_index_daily 或 ETF hist）
-    cn_index_map: dict[str, str] = {}
-
-    for t in all_tickers:
-        tl = t.lower()
-        # ---- CN 指数/ETF 的显式形式（先判，避免 SH510300.SS 被兜底到 US）----
-        # 情形 A: sh510300 / sz399006 标准 8 字符
-        if len(tl) == 8 and tl[:2] in {"sh", "sz"} and tl[2:].isdigit():
-            cn_index_map[t] = tl
-            continue
-        # 情形 B: SH510300.SS / sh510300.sz → 剥前缀剥后缀拿 6 位 root，若 ETF/指数前缀走 CN-index
-        stripped_suf = tl
-        if stripped_suf.endswith(".ss"):
-            stripped_suf = stripped_suf[:-3]
-        elif stripped_suf.endswith(".sz"):
-            stripped_suf = stripped_suf[:-3]
-        # 剥完后如果是 sh/sz+6数字 → 直接当指数
-        if len(stripped_suf) == 8 and stripped_suf[:2] in {"sh", "sz"} and stripped_suf[2:].isdigit():
-            cn_index_map[t] = stripped_suf
-            continue
-        # ---- CN 个股标准形式：600519.SS / 000001.SZ （root 6 位纯数 + .SS/.SZ，root 非 ETF 前缀）----
-        if (t.endswith(".SS") or t.endswith(".SZ")) and len(t) == 9 and t[:6].isdigit():
-            root = t[:6]
-            # 如果 root 是 ETF 前缀（51/56/58 沪ETF；15 深ETF；399 深指数；88x 指数），改走 CN-index
-            if root.startswith(("51", "56", "58", "15")) or root.startswith(("399", "880", "881")):
-                prefix = "sh" if root[0] in {"5", "8"} else "sz"
-                if root.startswith("15") or root.startswith("399"):
-                    prefix = "sz"
-                cn_index_map[t] = f"{prefix}{root}"
-                continue
-            cn_asset_map[t] = root
-            continue
-        # ---- 6 位纯数字 → 当指数/ETF 处理
-        if len(t) == 6 and t.isdigit():
-            cn_index_map[t] = t
-            continue
-        # ---- 其他非 .SS/.SZ 格式 → US
-        us_map[t] = t
-
-    n_tot = len(all_tickers)
-    print(f"[INFO] 分类结果: US={len(us_map)} CN-asset={len(cn_asset_map)} CN-index={len(cn_index_map)}  total={len(us_map)+len(cn_asset_map)+len(cn_index_map)}")
-
-    # ===== Phase 1: akshare US =====
-    if us_map:
-        n_ok = 0
-        n_tot_us = len(us_map)
-        for idx, (canonical, sym) in enumerate(us_map.items(), 1):
-            s = shared_close(sym, "US")
-            if s is not None and len(s) > 0:
-                closes_by_ticker[canonical] = s
-                n_ok += 1
-            if idx % 10 == 0 or idx == n_tot_us:
-                print(f"[PROG] Phase1-US {idx}/{n_tot_us}  ok={n_ok}  cum={len(closes_by_ticker)}/{n_tot}")
-        print(f"[INFO] Phase1 akshare US: ok={n_ok}/{n_tot_us}   (total cum {len(closes_by_ticker)}/{n_tot})")
-
-    # ===== Phase 2: akshare CN 个股 =====
-    if cn_asset_map:
-        n_ok = 0
-        n_tot_cn = len(cn_asset_map)
-        for idx, (canonical, sym) in enumerate(cn_asset_map.items(), 1):
-            s = shared_close(sym, "CN")
-            if s is not None and len(s) > 0:
-                closes_by_ticker[canonical] = s
-                n_ok += 1
-            if idx % 20 == 0 or idx == n_tot_cn:
-                print(f"[PROG] Phase2-CN-asset {idx}/{n_tot_cn}  ok={n_ok}  cum={len(closes_by_ticker)}/{n_tot}")
-        print(f"[INFO] Phase2 akshare CN-asset: ok={n_ok}/{n_tot_cn}   (total cum {len(closes_by_ticker)}/{n_tot})")
-
-    # ===== Phase 3: akshare CN 指数/ETF =====
-    if cn_index_map:
-        n_ok = 0
-        n_tot_ci = len(cn_index_map)
-        for idx, (canonical, sym) in enumerate(cn_index_map.items(), 1):
-            s = shared_close(sym, "CN")
-            if s is not None and len(s) > 0:
-                closes_by_ticker[canonical] = s
-                n_ok += 1
-            if idx % 10 == 0 or idx == n_tot_ci:
-                print(f"[PROG] Phase3-CN-index {idx}/{n_tot_ci}  ok={n_ok}  cum={len(closes_by_ticker)}/{n_tot}")
-        print(f"[INFO] Phase3 akshare CN-index: ok={n_ok}/{n_tot_ci}   (total cum {len(closes_by_ticker)}/{n_tot})")
-
-    print(f"[INFO] Final close coverage (akshare-only): {len(closes_by_ticker)}/{n_tot} tickers")
+    print(
+        f"[INFO] Final close coverage (akshare-only): "
+        f"{len(closes_by_route)}/{len(unique_routes)} routes"
+    )
 
     out: dict[tuple, dict] = {}
     no_asset = 0
     no_bm = 0
+    raw_asset_return = 0
     HORIZONS: list[tuple[int, str]] = [(1, "t1"), (3, "t3"), (5, "t5"), (7, "t7"), (15, "t15"), (30, "t30"), (60, "t60")]
     for e in events:
         key = (e.event_id, e.market, e.symbol)
-        at = asset_tickers[key]
-        bt = bm_tickers[key]
-        a_close = closes_by_ticker.get(at)
-        b_close = closes_by_ticker.get(bt)
+        market = _normalize_market(e.market)
+        asset_route = asset_routes[key]
+        benchmark_route = benchmark_routes[key]
+        a_close = closes_by_route.get(asset_route.cache_key)
+        b_close = (
+            closes_by_route.get(benchmark_route.cache_key)
+            if benchmark_route is not None else None
+        )
         rec: dict = {
-            "asset_ticker": at, "benchmark_ticker": bt,
+            "asset_ticker": asset_route.canonical,
+            "benchmark_ticker": benchmark_route.canonical if benchmark_route else None,
+            "car_method": car_method if benchmark_route else "raw_asset_return",
+            "car_method_requested": car_method if benchmark_route else "raw_asset_return",
+            "car_methods": {},
         }
         # initialize horizons
         for _, kn in HORIZONS:
@@ -859,23 +1154,56 @@ def _compute_cars_for_events(
             rec[f"car_{kn}_pvalue"] = None
         if a_close is None:
             no_asset += 1
-        if b_close is None:
+        if benchmark_route is not None and b_close is None:
             no_bm += 1
+        if benchmark_route is None:
+            raw_asset_return += 1
         for w, key_name in HORIZONS:
-            r_a = _car(a_close, e.event_date, w, e.event_time_raw, e.market) if a_close is not None else None
-            r_b = _car(b_close, e.event_date, w, e.event_time_raw, e.market) if b_close is not None else None
+            anchors = (
+                _event_anchor_dates(a_close, e.event_date, w, e.event_time_raw, market)
+                if a_close is not None else None
+            )
+            if anchors is None:
+                r_a = None
+                r_b = None
+            else:
+                anchor_start, anchor_end, _, _ = anchors
+                r_a = _return_between(a_close, anchor_start, anchor_end)
+                r_b = _return_between(b_close, anchor_start, anchor_end)
             rec[key_name] = r_a
             rec[f"bm_{key_name}"] = r_b
-            if a_close is not None and b_close is not None:
-                car, t_stat, p_value = _market_model_car(
-                    a_close, b_close, e.event_date, w, e.event_time_raw, e.market
+            if benchmark_route is None:
+                # No benchmark is an explicit absolute-return protocol. Never
+                # inject SPY (or any synthetic series) across markets.
+                rec[f"car_{key_name}"] = r_a
+                if r_a is not None:
+                    rec["car_methods"][key_name] = "raw_asset_return"
+            elif car_method == "benchmark_relative_return":
+                # The prediction contract asks whether the asset outperforms
+                # its benchmark over these exact same close-to-close anchors.
+                # Missing benchmark endpoints must not become a zero return.
+                if r_a is not None and r_b is not None:
+                    rec[f"car_{key_name}"] = r_a - r_b
+                    rec["car_methods"][key_name] = "benchmark_relative_return"
+            elif a_close is not None and b_close is not None:
+                car, t_stat, p_value, actual_method = _market_model_car_with_method(
+                    a_close, b_close, e.event_date, w, e.event_time_raw, market
                 )
                 rec[f"car_{key_name}"] = car
                 rec[f"car_{key_name}_tstat"] = t_stat
                 rec[f"car_{key_name}_pvalue"] = p_value
+                if actual_method is not None:
+                    rec["car_methods"][key_name] = actual_method
+        actual_methods = set(rec["car_methods"].values())
+        if len(actual_methods) == 1:
+            rec["car_method"] = next(iter(actual_methods))
+        elif len(actual_methods) > 1:
+            rec["car_method"] = "market_model_with_endpoint_fallback"
         out[key] = rec
     if no_asset or no_bm:
         print(f"[WARN] Missing closes: asset={no_asset}, benchmark={no_bm}")
+    if raw_asset_return:
+        print(f"[INFO] Absolute-return Oracle (no benchmark): {raw_asset_return}/{len(events)} events")
     return out
 
 
@@ -886,7 +1214,9 @@ def _label_from_car(car: Optional[float], epsilon: float) -> str:
         return "up"
     if car < -epsilon:
         return "down"
-    return "neutral"
+    # With a zero threshold, a genuinely flat outcome has no directional
+    # ground truth. Keep it out of direction accuracy instead of guessing.
+    return "" if epsilon == 0 else "neutral"
 
 
 def write_labels(events: list[RawEvent], cars: dict, out_path, epsilon: float = 0.005):
@@ -926,6 +1256,12 @@ def write_labels(events: list[RawEvent], cars: dict, out_path, epsilon: float = 
             "symbol": e.symbol,
             "event_time": e.event_date.isoformat(),
             "event_type_l2": e.event_type_l2,
+            "asset_ticker": c.get("asset_ticker"),
+            "benchmark_ticker": c.get("benchmark_ticker"),
+            "car_method": c.get("car_method"),
+            "car_method_requested": c.get("car_method_requested"),
+            "car_methods": c.get("car_methods") or {},
+            "epsilon": float(epsilon),
         }
         # ---- horizon fields (ret / bm_ret / car / car_pvalue for each) ----
         for kn in HORIZONS_DIR:
@@ -989,9 +1325,9 @@ def write_labels(events: list[RawEvent], cars: dict, out_path, epsilon: float = 
             net = row["consensus_net"]
             if net > 0: row["label_consensus66"] = "up"
             elif net < 0: row["label_consensus66"] = "down"
-            else: row["label_consensus66"] = "neutral"
+            else: row["label_consensus66"] = "" if epsilon == 0 else "neutral"
         else:
-            row["label_consensus66"] = "neutral"
+            row["label_consensus66"] = "" if epsilon == 0 else "neutral"
 
         rows.append(row)
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
@@ -1006,14 +1342,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--events", required=True, help="events_phase1.jsonl")
     ap.add_argument("--out", required=True, help="labels.jsonl")
-    ap.add_argument("--epsilon", type=float, default=0.005, help="neutral threshold for label (default 0.5%%)")
+    ap.add_argument("--epsilon", type=float, default=0.0, help="direction threshold (default 0: up/down; exact zero has no direction); set positive for a legacy neutral band")
+    ap.add_argument(
+        "--car-method", choices=("benchmark_relative_return", "market_model"),
+        default="benchmark_relative_return",
+        help="direction target: endpoint benchmark-relative return (default), or explicit legacy OLS CAR",
+    )
     args = ap.parse_args()
 
     events = load_events(args.events)
     print(f"[INFO] loaded {len(events)} events from {args.events}")
     if not events:
         raise SystemExit("no events")
-    cars = _compute_cars_for_events(events)
+    cars = _compute_cars_for_events(events, car_method=args.car_method)
     _rows = write_labels(events, cars, args.out, epsilon=float(args.epsilon))
     # summary stats
     mkt = Counter(e.market for e in events)

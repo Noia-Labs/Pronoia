@@ -173,7 +173,6 @@ async def llm_web_latest(query: str, limit: int = 8) -> dict:
         "items 最多 8 条；拿不到时返回 {\"items\": []}，不要输出 markdown。",
         f"请围绕这个查询抓取最新公开信息：{q}",
         max_keywords=3,
-        max_output_tokens=2200,
     )
     if not isinstance(obj, dict):
         return ok([], meta("ark.responses.web_search", 0)) | {"note": "LLM 联网搜索未返回结构化结果"}

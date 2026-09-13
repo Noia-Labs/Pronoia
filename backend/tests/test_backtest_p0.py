@@ -14,12 +14,27 @@ class TestBacktestP0(unittest.TestCase):
         # 隔离测试环境：临时 DB + DATA_DIR
         cls._td = tempfile.TemporaryDirectory()
         cls.tmp = Path(cls._td.name)
+        cls._old_env_db = os.environ.get("FEVER_DB_PATH")
+        cls._old_env_data = os.environ.get("FEVER_DATA_DIR")
         os.environ["FEVER_DB_PATH"] = str(cls.tmp / "fever_test.db")
         os.environ["FEVER_DATA_DIR"] = str(cls.tmp / "data")
         (cls.tmp / "data").mkdir(exist_ok=True)
-        # 强制重建 DB 连接（否则 _conn 单例会指向旧文件）
+        # pytest 会在 setUpClass 之前收集/导入其他模块，所以仅修改环境
+        # 变量不足以改变已加载的 config.DB_PATH。显式替换运行时配置，
+        # 避免单独或全量运行测试时污染用户的 fever.db。
+        import app.config as _config
         import app.db as _db
+        from app.routes import backtest as _backtest
+
+        cls._old_config_db = _config.DB_PATH
+        cls._old_config_data = _config.DATA_DIR
+        cls._old_route_data = _backtest.DATA_DIR
+        if _db._conn is not None:
+            _db._conn.close()
         _db._conn = None
+        _config.DB_PATH = os.environ["FEVER_DB_PATH"]
+        _config.DATA_DIR = os.environ["FEVER_DATA_DIR"]
+        _backtest.DATA_DIR = os.environ["FEVER_DATA_DIR"]
         _db.init_db()
         cls.events_path = cls._make_fixture_events(cls.tmp / "events.jsonl")
         cls.labels_path = cls._make_fixture_labels(cls.tmp / "labels.jsonl")
@@ -27,6 +42,24 @@ class TestBacktestP0(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        import app.config as _config
+        import app.db as _db
+        from app.routes import backtest as _backtest
+
+        if _db._conn is not None:
+            _db._conn.close()
+        _db._conn = None
+        _config.DB_PATH = cls._old_config_db
+        _config.DATA_DIR = cls._old_config_data
+        _backtest.DATA_DIR = cls._old_route_data
+        if cls._old_env_db is None:
+            os.environ.pop("FEVER_DB_PATH", None)
+        else:
+            os.environ["FEVER_DB_PATH"] = cls._old_env_db
+        if cls._old_env_data is None:
+            os.environ.pop("FEVER_DATA_DIR", None)
+        else:
+            os.environ["FEVER_DATA_DIR"] = cls._old_env_data
         cls._td.cleanup()
 
     @staticmethod
@@ -189,7 +222,9 @@ class TestBacktestP0(unittest.TestCase):
             second = await asyncio.wait_for(q.get(), timeout=1.0)
             return first, second
 
-        first, second = asyncio.get_event_loop_policy().get_event_loop().run_until_complete(_a())
+        # Python 3.11 no longer guarantees an implicit current loop, and an
+        # earlier TestClient may also close it. Keep this unit test isolated.
+        first, second = asyncio.run(_a())
         self.assertEqual(first["type"], "prediction")
         self.assertEqual(second["type"], "run_done")
 

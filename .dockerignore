@@ -1,0 +1,59 @@
+# Version-control and editor state
+.git
+.git/
+.github/
+.vscode/
+.idea/
+.trae/
+.DS_Store
+
+# Secrets and local environment files. Examples are also excluded from the
+# build context; the runtime receives secrets through Compose/environment.
+.env
+.env.*
+**/.env
+**/.env.*
+**/*.env
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Dependency and build products
+**/node_modules
+**/node_modules/
+frontend/dist/
+frontend/build/
+**/__pycache__/
+**/*.py[cod]
+.venv/
+**/.venv/
+backend/venv/
+
+# Databases, market data and generated backtest output
+data/
+backtesting/
+pronoia_run/
+**/*.db
+**/*.db-*
+**/*.sqlite
+**/*.sqlite3
+**/*.sqlite-*
+**/*.sqlite3-*
+
+# Runtime logs, caches, reports and local archives
+*.log
+logs/
+.run/
+.pronoia-launcher/
+**/.pytest_cache/
+.coverage
+htmlcov/
+test-report/
+tech-report/
+archive/
+.trae-html-share-packages/
+
+# Local sharing state must be mounted, never baked into an image
+.pronoia-state/
+.env.share

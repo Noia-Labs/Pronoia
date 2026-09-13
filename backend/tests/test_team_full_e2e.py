@@ -372,11 +372,11 @@ class TestTeamFullE2E:
         routing_events = [t for t in tool_trace if t.get("type") == "signal_routing"]
         assert len(routing_events) == 0
 
-    async def test_e2e_low_confidence_preserves_direction(self):
-        """低 confidence 只描述可靠度，不再覆盖模型给出的方向。"""
+    async def test_e2e_low_confidence_retains_supported_direction(self):
+        """低置信度保持已给出的方向，不伪装成中性观点。"""
         event = _make_cn_ma_event()
         event["event_id"] = "low_conf_gate_e2e"
-        # 构造 confidence=0.55 的最终回答
+        # 构造 confidence=0.45 的最终回答
         from app.event_backtest import engine as eng_mod
         from app.event_backtest.models import EventRecord
 
@@ -392,7 +392,7 @@ class TestTeamFullE2E:
         async def _fake_run_agent(agent_id, messages, *, agent_def, state, artifact_store,
                                   max_rounds=8, emit_thinking=True):
             if agent_id == "router":
-                content = _make_final_answer("up", 0.55, "低置信度案例。")
+                content = _make_final_answer("up", 0.45, "低置信度案例。")
             else:
                 content = "[mock findings]"
             state["content"] += content
@@ -413,6 +413,7 @@ class TestTeamFullE2E:
                 trajectory_ckpt_dir=str(ckpt_dir),
             )
 
-        # 分支 RLVR 0.60 硬闸：confidence=0.55 < 0.60 → direction 强制 neutral
-        assert pred.pred_direction == "neutral"
-        assert pred.confidence == pytest.approx(0.55, abs=0.01)
+        # confidence=0.45 remains a directional prediction.
+        assert pred.pred_direction == "up"
+        assert pred.abstain is False
+        assert pred.confidence == pytest.approx(0.45, abs=0.01)

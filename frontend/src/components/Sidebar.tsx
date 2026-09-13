@@ -35,6 +35,8 @@ export default function Sidebar() {
   const goView = (v: ViewName) => {
     if (streaming && v !== "chat") return; // 流式中禁止切走
     setView(v);
+    // 实验页面需要宽幅图表与协议配置；进入时收起全局案例栏，回到研究时恢复。
+    setLeftOpen(v === "chat");
   };
 
   const goTab = (t: "skills" | "team" | "logic") => {
@@ -74,10 +76,10 @@ export default function Sidebar() {
         >
           <MessageSquareText size={16} />
         </button>
-        {/* 回测 Run */}
+        {/* 回测中心 */}
         <button
-          onClick={() => goView("backtest-list")}
-          title={inBacktestView ? "回测 Run（当前）" : "切换到回测中心"}
+          onClick={() => goView("backtest-runs")}
+          title={inBacktestView ? "回测中心（当前）" : "切换到回测中心"}
           className={cls(
             "rounded-lg p-2 transition-colors",
             inBacktestView ? "bg-card text-jade shadow-card" : "text-mute hover:bg-card hover:text-ink",
@@ -221,7 +223,7 @@ export default function Sidebar() {
             研究
           </button>
           <button
-            onClick={() => goView("backtest-list")}
+            onClick={() => goView("backtest-runs")}
             className={cls(
               "flex items-center justify-center gap-1 rounded-md px-1 py-1.5 text-[11px] font-medium transition-all",
               inBacktestView ? "bg-card text-jade shadow-card" : "text-mute hover:bg-card/60 hover:text-ink",

@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator
 
 from .. import config
 from ..llm import ArtifactStore, complete_json, run_agent
+from ..model_lab.defaults import DEFAULT_PLANNING_OUTPUT_TOKENS, DEFAULT_STRUCTURED_OUTPUT_TOKENS
 from .evidence_navigator import EvidenceNavigator
 from .research_context import ResearchContext
 from ..skills.evidence_graph import (
@@ -37,6 +38,31 @@ RLVR_ANALYZER_INSTRUCTION_IF_ENABLED = """【Tier 1.5 · Pronoia-RLVR 可验证�
 - 只把【0.预判时间窗口】【0.5 量价 regime 校验】两段的数值，以及最终方向 +
   置信度 + RET↔CAR 一致标志拼进 synthesis；不整段复制避免污染。
 - 若 ENABLE_RLVR_TIER15=False，则本节静默跳过，不影响默认 Team Pipeline 行为。"""
+
+# Team mode is also used by the historical event backtester.  That caller must
+# explicitly opt into this point-in-time-safe subset so generic research agents
+# cannot fetch current news, prices, financials or holder data during a replay.
+STRICT_BACKTEST_SKILL_ALLOWLIST = frozenset({
+    "event_study_skill",
+    "announcement_classifier",
+    "ar_decomposer",
+    "drift_context_analyzer",
+    "evidence_graph",
+})
+
+
+def _agent_def_with_skill_allowlist(
+    agent_id: str,
+    skill_allowlist: set[str] | frozenset[str] | None,
+) -> dict[str, Any]:
+    """Copy an agent definition and optionally restrict its callable skills."""
+    agent_def = dict(get_agent(agent_id))
+    if skill_allowlist is not None:
+        agent_def["skills"] = [
+            skill for skill in (agent_def.get("skills") or [])
+            if str(skill) in skill_allowlist
+        ]
+    return agent_def
 
 PLANNER_INSTRUCTION = """你是任务规划器。把用户问题拆成 2~4 个子任务，每个子任务指定一个专家 Agent：
 - event_scout（事件猎手：新闻/公告/快讯检索，筛高影响事件）
@@ -259,6 +285,8 @@ async def _run_expert_serial(
     extra_context: str = "",
     event_meta: dict | None = None,
     prior_conversation: str = "",
+    skill_allowlist: set[str] | frozenset[str] | None = None,
+    frozen_event_meta: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict]:
     """单 expert 串行执行：agent_start → events → agent_done 收尾。失败也收尾。
 
@@ -338,7 +366,46 @@ async def _run_expert_serial(
 
         async def team_skill_executor(name: str, args: dict) -> dict:
             nonlocal external_skill_calls
-            args = _inject_event_skill_defaults(name, args, event_meta)
+            safe_args = _inject_event_skill_defaults(name, args, event_meta)
+            if skill_allowlist is not None and name not in skill_allowlist:
+                # Tool schemas are advisory input to the model, not a security
+                # boundary.  Enforce the historical-replay allowlist again at
+                # execution time so an undeclared/hallucinated call can never
+                # reach a live market, news or fundamentals handler.
+                return {
+                    "ok": False,
+                    "code": "skill_not_allowed_in_historical_replay",
+                    "error": f"严格历史回放禁止调用技能: {name}",
+                }
+            safe_args = dict(safe_args or {})
+            if skill_allowlist is not None and name in {"event_study_skill", "event_study"}:
+                # Do not rely on process-global environment state: any restricted
+                # team replay forces the immutable event identity and the
+                # point-in-time view again at the executor edge.
+                safe_args["as_of"] = True
+                if frozen_event_meta:
+                    market = str(frozen_event_meta.get("market") or "").strip().upper()
+                    raw_time = (
+                        frozen_event_meta.get("available_time")
+                        or frozen_event_meta.get("event_time")
+                    )
+                    try:
+                        from ..event_backtest.evaluation_protocol import parse_event_datetime
+
+                        parsed = parse_event_datetime(
+                            raw_time,
+                            market=market,
+                            field_name="available_time/event_time",
+                        )
+                        event_date = parsed.date().isoformat() if parsed is not None else str(raw_time or "")[:10]
+                    except ValueError:
+                        event_date = str(raw_time or "")[:10]
+                    safe_args.update({
+                        "event_date": event_date,
+                        "symbol": str(frozen_event_meta.get("symbol") or "").strip(),
+                        "market": market,
+                        "benchmark": str(frozen_event_meta.get("benchmark") or "cash").strip(),
+                    })
             if name != "evidence_graph" and external_skill_budget is not None:
                 if external_skill_calls >= external_skill_budget:
                     return {
@@ -351,9 +418,9 @@ async def _run_expert_serial(
                 external_skill_calls += 1
             if research_context is None:
                 from ..llm import execute_skill
-                return await execute_skill(name, args)
+                return await execute_skill(name, safe_args)
             from ..llm import execute_skill
-            return await research_context.execute(execute_skill, name, args)
+            return await research_context.execute(execute_skill, name, safe_args)
 
         resolved_agent_def = agent_def or get_agent(agent_id, prompt_variant)
         if agent_id == "deep_researcher" and prior_findings:
@@ -367,6 +434,15 @@ async def _run_expert_serial(
             # multi-agent run starts asynchronously from the exported graph, so
             # repeating source data calls here only delays that handoff.
             resolved_agent_def = {**resolved_agent_def, "skills": []}
+        if skill_allowlist is not None:
+            resolved_agent_def = {
+                **resolved_agent_def,
+                "skills": [
+                    skill
+                    for skill in (resolved_agent_def.get("skills") or [])
+                    if str(skill) in skill_allowlist
+                ],
+            }
         async for ev in run_agent(agent_id, messages, agent_def=resolved_agent_def,
                                   state=expert_state, artifact_store=artifact_store,
                                   skill_executor=team_skill_executor,
@@ -766,6 +842,7 @@ async def run_team(
     skip_verify: bool = False,
     event_meta: dict | None = None,
     agent_prompt_variants: dict[str, str] | None = None,
+    skill_allowlist: set[str] | frozenset[str] | None = None,
 ) -> AsyncIterator[dict]:
     """Yield SSE events for the whole team-mode flow. state['content'] = final answer.
 
@@ -776,6 +853,8 @@ async def run_team(
     event_meta: 事件元信息（market, event_type_l2, symbol, benchmark 等），
                 用于 Synthesize 阶段路由到对应 Tier 1 analyzer skill。
     agent_prompt_variants: 按 agent_id 指定 persona 变体；回测 A/B 当前用于 deep_researcher。
+    skill_allowlist: 可调用 skill 的白名单；严格历史回测传入安全子集，
+                     ``None`` 保持普通研究工作台的完整能力。
     """
     # ------------------------------------------------------------ 1) plan --
     # 构建历史上下文摘要（最近 3 轮），让 router 知道之前聊了什么
@@ -794,7 +873,7 @@ async def run_team(
         plan_json = await complete_json(
             system_prompt("router") + "\n\n" + PLANNER_INSTRUCTION,
             f"用户问题：{question}{history_ctx}",
-            max_tokens=2000,
+            max_tokens=DEFAULT_PLANNING_OUTPUT_TOKENS,
         )
         if plan_json:
             for t in plan_json.get("tasks", []):
@@ -896,6 +975,8 @@ async def run_team(
             graph=team_graph if is_deep_researcher else None,
             export_graph=not is_deep_researcher,
             prior_conversation=history_ctx,
+            skill_allowlist=skill_allowlist,
+            frozen_event_meta=event_meta,
         ):
             # 提取 agent_findings 写入 state + findings；其余原样 yield
             if ev.get("type") == "agent_findings":
@@ -957,6 +1038,8 @@ async def run_team(
                     external_skill_budget=config.EVIDENCE_NAVIGATOR_EXTERNAL_SKILL_BUDGET,
                     extra_context=graph_context,
                     event_meta=event_meta,
+                    skill_allowlist=skill_allowlist,
+                    frozen_event_meta=event_meta,
                 ):
                     if ev.get("type") == "agent_findings":
                         followup = str(ev.get("findings") or "").strip()
@@ -1062,11 +1145,35 @@ async def run_team(
             "请将其作为重要参考——如果分析师团队发现中的信号与结构化分析一致，提高 confidence；"
             "如果不一致，请仔细检查是否遗漏了关键信号（如出尽效应、被动AR等）。"
             "结构化分析的净分方向应有较高权重。"
-            "\n【neutral 约束（必须遵守）】 neutral 仅用于 |T+3 CAR|<50bps 的纯噪声事件（即方向完全随机）。"
-            "在以下情况才允许判 neutral：①结构化分析的 |净分|<1.0 且无任何一条信号强度≥2；②存在 ≥2 条方向相反且力度相当的矛盾证据；③关键价格数据/公告数值完全缺失。"
-            "否则必须在 up / down 中给出明确方向，不要用 neutral 逃避判断。"
+            "\n【输出约束】分析器的 neutral 仅表示内部信号未形成方向，不是最终预测。"
+            "资料足以判断时仅输出 up 或 down；关键资料缺失无法支持判断时明确输出 insufficient_data（数据不足）并列出缺失信息。"
+            "不要把缺失数值当作零，也不要把低置信度或分析器净分接近零自动转换成中性预测。"
         )
 
+    # Only historical event prediction has a direction parser. Ordinary team
+    # research (including Model Lab QA) must fulfill the original question.
+    if event_meta:
+        task_output_instruction = (
+            "【预测状态】资料足以判断时输出 available，仅允许 up 或 down。"
+            "关键事实、公告数值或必要事前行情缺失，无法支持判断时输出 insufficient_data，"
+            "最终方向、置信度与预期收益率均为 null，并在中文理由中列出具体缺失资料。"
+            "【neutral 约束】不输出 neutral，不强猜缺失数据，不因置信度低而改变已有方向，"
+            "不设置各方向或弃权比例目标。"
+            "输出格式要求（与 parser 对齐，必须严格包含中文标签行）：\n"
+            "【预测状态】 available 或 insufficient_data\n"
+            "【最终方向】 up 或 down；数据不足时 null\n"
+            "【置信度】 0 到 1；数据不足时 null\n"
+            "【中文理由】 不超过 300 字，列举关键证据或具体缺失资料\n"
+            "【预期收益率】 数值或 null；数据不足时必须为 null。"
+            "专家文字中没有对应工具证据的数字不得继承为事实。事件预测员的后台推演尚未作为"
+            "本轮聊天输入返回，不得声称已经看到模拟结果；quick 单次推演不得输出百分比概率，"
+            "只能使用高/中/低等未校准的相对倾向。"
+        )
+    else:
+        task_output_instruction = (
+            "请逐项完成用户原始问题要求的分析和交付内容，保留必要的数据、公式、来源、"
+            "事实与推断的区分，以及资料缺口。篇幅以完整回答问题为准。"
+        )
     synth_messages = [{"role": "system", "content": system_prompt("router")}]
     synth_messages.extend(history)
     synth_messages.append({
@@ -1077,18 +1184,7 @@ async def run_team(
             f"{analyzer_context}\n\n"
             "请综合以上专家发现，给出结构化的最终回答（先结论后依据，标注来源与推断）。"
             "【重要】不要调用任何工具！专家已经查过所有数据。你必须直接输出文字回答，不要 function/tool call。"
-            "【neutral 约束（必须遵守）】 neutral 仅用于以下严格条件："
-            "(a) T+3 方向信号极弱（|CAR|预计<50bps，方向纯噪声）；"
-            "(b) 存在 ≥2 条方向相反且力度相当的矛盾证据；"
-            "(c) 关键价格数据/公告数值完全缺失无法判断。"
-            "否则必须在 up / down 中给出明确方向，不要用 neutral 逃避判断。"
-            "输出格式要求（与 parser 对齐，必须严格包含中文标签行）：\n"
-            "【最终方向】 up / down / neutral 三选一\n"
-            "【置信度】 0.xx（0.50-0.99）\n"
-            "【中文理由】 不超过 300 字，列举 2-4 条关键支撑信号。"
-            "专家文字中没有对应工具证据的数字不得继承为事实。事件预测员的后台推演尚未作为"
-            "本轮聊天输入返回，不得声称已经看到模拟结果；quick 单次推演不得输出百分比概率，"
-            "只能使用高/中/低等未校准的相对倾向。"
+            f"{task_output_instruction}"
         ),
     })
     # synthesize 阶段：禁用所有 skill，强制纯文字总结，避免 deepseek-v4-flash 发起无意义 tool call 导致 max_rounds 耗尽 content 为空
@@ -1110,7 +1206,7 @@ async def run_team(
             verdict_json = await complete_json(
                 system_prompt("verifier"),
                 f"【分析草稿】\n{draft[:4000]}\n\n【证据摘要（工具调用记录）】\n{evidence}",
-                max_tokens=3000,
+                max_tokens=DEFAULT_STRUCTURED_OUTPUT_TOKENS,
             )
         except Exception:  # noqa: BLE001
             verdict_json = None
@@ -1167,7 +1263,7 @@ async def run_team(
             extracted = await complete_json(
                 system_prompt("router") + "\n\n" + HYPOTHESIS_EXTRACT_INSTRUCTION,
                 f"用户原始问题：{question}\n\n【研究结论】\n{final_answer[:3500]}",
-                max_tokens=2000,
+                max_tokens=DEFAULT_PLANNING_OUTPUT_TOKENS,
             )
         except Exception:  # noqa: BLE001
             extracted = None

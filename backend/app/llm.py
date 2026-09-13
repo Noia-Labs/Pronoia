@@ -6,21 +6,27 @@
 from __future__ import annotations
 
 import asyncio
-from contextvars import ContextVar
 import json
+import re
+import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from openai import AsyncOpenAI
 import httpx
 
 from . import config
+from .model_lab.defaults import DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_STRUCTURED_OUTPUT_TOKENS
 from .log_bus import publish
 from .skills.registry import REGISTRY, ensure_skills_loaded, serialize_tool_result, tool_schema_subset, tools_for_agent
 
 _client: Optional[AsyncOpenAI] = None
 _skill_depth: ContextVar[int] = ContextVar("skill_execution_depth", default=0)
 _SLOW_NESTED_SKILLS = frozenset({"event_study"})
+_profile_clients: dict[tuple[str, str, str, float, str, int, int], AsyncOpenAI] = {}
 
 
 def _skill_timeout(name: str, category: str, depth: int) -> float:
@@ -41,44 +47,203 @@ def _skill_timeout(name: str, category: str, depth: int) -> float:
 
 async def _create_with_hard_timeout(awaitable):
     """Cap the SDK await even when a local proxy keeps the socket alive."""
-    return await asyncio.wait_for(awaitable, timeout=config.LLM_TIMEOUT)
+    return await asyncio.wait_for(
+        awaitable, timeout=resolve_runtime_target().timeout_seconds
+    )
 
 
 async def _stream_with_hard_timeout(stream):
     """Cap a complete streaming round instead of only individual socket reads."""
+    timeout_seconds = resolve_runtime_target().timeout_seconds
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + config.LLM_TIMEOUT
+    deadline = loop.time() + timeout_seconds
     iterator = stream.__aiter__()
     while True:
         remaining = deadline - loop.time()
         if remaining <= 0:
             raise asyncio.TimeoutError(
-                f"LLM streaming round exceeded {config.LLM_TIMEOUT:.0f}s"
+                f"LLM streaming round exceeded {timeout_seconds:.0f}s"
             )
         try:
             chunk = await asyncio.wait_for(iterator.__anext__(), timeout=remaining)
         except StopAsyncIteration:
             return
         yield chunk
+@dataclass(frozen=True)
+class LLMRuntimeTarget:
+    """Resolved transport for one logical request/run.
+
+    ``api_key`` exists only in process memory. Model Lab persists an opaque
+    local credential or environment reference and resolves it per request.
+    """
+
+    base_url: str
+    api_key: str = field(repr=False)
+    model_id: str
+    timeout_seconds: float
+    profile_id: Optional[str] = None
+    secret_env_ref: Optional[str] = None
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+
+
+_runtime_override: ContextVar[Optional[LLMRuntimeTarget]] = ContextVar(
+    "pronoia_llm_runtime_override", default=None
+)
+
+
+def _target_from_profile(profile: dict[str, Any]) -> LLMRuntimeTarget:
+    from .model_endpoint_security import validate_runtime_model_endpoint
+    from .model_lab.providers import chat_completions_url, resolve_profile_secret
+
+    base_url = str(profile.get("base_url") or "").strip().rstrip("/")
+    # Re-check DNS at the beginning of every new logical request.  The OpenAI
+    # client is configured not to retry at this layer; higher-level bounded
+    # retry policy remains in this module.
+    validate_runtime_model_endpoint(
+        chat_completions_url(base_url), label="默认模型 API"
+    )
+    # AsyncOpenAI expects the API root and appends /chat/completions itself;
+    # profiles may also be used by the raw urllib adapter, which accepts either
+    # representation.
+    suffix = "/chat/completions"
+    client_base_url = base_url[:-len(suffix)].rstrip("/") if base_url.endswith(suffix) else base_url
+    return LLMRuntimeTarget(
+        base_url=client_base_url,
+        api_key=resolve_profile_secret(profile),
+        model_id=str(profile.get("model_id") or "").strip(),
+        timeout_seconds=float(profile.get("timeout_seconds") or config.LLM_TIMEOUT),
+        profile_id=str(profile.get("id") or "") or None,
+        secret_env_ref=str(profile.get("secret_env_ref") or "") or None,
+        max_output_tokens=int(profile.get("max_output_tokens") or DEFAULT_MAX_OUTPUT_TOKENS),
+    )
+
+
+def resolve_runtime_target() -> LLMRuntimeTarget:
+    """Resolve the immutable override, then the current default, then legacy env.
+
+    Ordinary new chat/backtest calls dynamically observe a newly-selected
+    default profile.  Model Lab workers enter ``model_profile_context`` with a
+    frozen snapshot, so a later default/profile edit cannot alter an existing
+    batch.
+    """
+    overridden = _runtime_override.get()
+    if overridden is not None:
+        return overridden
+    # Lazy import avoids an import cycle while db.py initializes the schema.
+    from .model_lab import repository as model_repo
+
+    selected = model_repo.get_default_profile(public=False)
+    if selected is not None:
+        return _target_from_profile(selected)
+    return LLMRuntimeTarget(
+        base_url=config.LLM_BASE_URL,
+        api_key=config.LLM_API_KEY,
+        model_id=config.LLM_MODEL,
+        timeout_seconds=config.LLM_TIMEOUT,
+        profile_id=None,
+        secret_env_ref=None,
+    )
+
+
+def get_model_name() -> str:
+    return resolve_runtime_target().model_id
+
+
+def output_token_limit(requested: int | None = None) -> int:
+    """Respect the frozen connection limit for every nested Agent stage."""
+    target = resolve_runtime_target()
+    return max(32, min(
+        int(requested or DEFAULT_MAX_OUTPUT_TOKENS),
+        int(target.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS),
+    ))
+
+
+def redact_runtime_error(text: Any) -> str:
+    """Scrub diagnostics with the already-pinned key without another lookup."""
+    from .model_endpoint_security import redact_sensitive_text
+
+    target = _runtime_override.get()
+    return redact_sensitive_text(text, target.api_key if target else config.LLM_API_KEY)
+
+
+@contextmanager
+def model_profile_context(profile_snapshot: dict[str, Any]):
+    """Pin one profile snapshot for all nested Agent/backtest model calls."""
+    token = _runtime_override.set(_target_from_profile(dict(profile_snapshot)))
+    try:
+        yield
+    finally:
+        _runtime_override.reset(token)
+
+
+@contextmanager
+def runtime_target_context(target: LLMRuntimeTarget):
+    """Pin one already-resolved target across an entire logical chat request."""
+
+    token = _runtime_override.set(target)
+    try:
+        yield
+    finally:
+        _runtime_override.reset(token)
 
 
 def get_client() -> AsyncOpenAI:
-    """返回 AsyncOpenAI client。优先 MAAS，其次 ARK。统一 model_name 用 config.LLM_MODEL。"""
+    """Return the client for an explicit snapshot/current default/legacy env."""
     global _client
-    if _client is None:
+    target = resolve_runtime_target()
+    if target.profile_id is None:
+        if _client is None:
+            http_client = None
+            if config.LLM_FORCE_IPV4:
+                http_client = httpx.AsyncClient(
+                    transport=httpx.AsyncHTTPTransport(
+                        local_address="0.0.0.0", retries=2
+                    ),
+                    timeout=target.timeout_seconds,
+                )
+            client_kwargs: dict[str, Any] = dict(
+                base_url=target.base_url,
+                api_key=target.api_key,
+                timeout=target.timeout_seconds,
+            )
+            if http_client is not None:
+                client_kwargs["http_client"] = http_client
+            _client = AsyncOpenAI(**client_kwargs)
+        return _client
+    try:
+        loop_id = id(asyncio.get_running_loop())
+    except RuntimeError:
+        loop_id = 0
+    cache_key = (
+        target.profile_id or "",
+        target.base_url,
+        target.model_id,
+        target.timeout_seconds,
+        target.secret_env_ref or "",
+        threading.get_ident(),
+        loop_id,
+    )
+    client = _profile_clients.get(cache_key)
+    if client is None:
         http_client = None
         if config.LLM_FORCE_IPV4:
             http_client = httpx.AsyncClient(
-                transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0", retries=2),
-                timeout=config.LLM_TIMEOUT,
+                transport=httpx.AsyncHTTPTransport(
+                    local_address="0.0.0.0", retries=2
+                ),
+                timeout=target.timeout_seconds,
             )
-        _client = AsyncOpenAI(
-            base_url=config.LLM_BASE_URL,
-            api_key=config.LLM_API_KEY,
-            timeout=config.LLM_TIMEOUT,
-            http_client=http_client,
+        client_kwargs = dict(
+            base_url=target.base_url,
+            api_key=target.api_key,
+            timeout=target.timeout_seconds,
+            max_retries=0,
         )
-    return _client
+        if http_client is not None:
+            client_kwargs["http_client"] = http_client
+        client = AsyncOpenAI(**client_kwargs)
+        _profile_clients[cache_key] = client
+    return client
 
 
 ArtifactStore = Callable[[str, str, Any], Awaitable[dict]]
@@ -216,9 +381,10 @@ async def run_agent(
     for round_no in range(1, max_rounds + 1):
         state["rounds"] = round_no
         kwargs: dict[str, Any] = {
-            "model": config.LLM_MODEL,
+            "model": get_model_name(),
             "messages": messages,
             "stream": True,
+            "max_tokens": output_token_limit(),
         }
         if tools:
             kwargs["tools"] = tools
@@ -360,7 +526,7 @@ async def run_agent(
         repeated_failure_skill = next((skill for skill, count in consecutive_failures.items() if count >= 3), None)
         if repeated_failure_skill:
             summary_kwargs: dict[str, Any] = {
-                "model": config.LLM_MODEL,
+                "model": get_model_name(),
                 "messages": messages + [{
                     "role": "user",
                     "content": (
@@ -369,6 +535,7 @@ async def run_agent(
                     ),
                 }],
                 "stream": True,
+                "max_tokens": output_token_limit(),
             }
             if config.AGENT_MAX_TOKENS > 0:
                 summary_kwargs["max_tokens"] = config.AGENT_MAX_TOKENS
@@ -391,9 +558,10 @@ async def run_agent(
         # 达到最大轮数仍有 tool_calls —— 让模型做一次无工具总结
         state["truncated_by_rounds"] = True
         summary_kwargs: dict[str, Any] = {
-            "model": config.LLM_MODEL,
+            "model": get_model_name(),
             "messages": messages + [{"role": "user", "content": "工具轮次已用完，请基于已获得的信息直接给出最终回答。"}],
             "stream": True,
+            "max_tokens": output_token_limit(),
         }
         if config.AGENT_MAX_TOKENS > 0:
             summary_kwargs["max_tokens"] = config.AGENT_MAX_TOKENS
@@ -413,25 +581,288 @@ async def run_agent(
 # ------------------------------------------------------- one-shot helpers ---
 
 
-async def complete_text(system: str, user: str, *, max_tokens: int = 2000) -> str:
+# Keep the transport-level JSON instruction separate from every business
+# prompt.  Some OpenAI-compatible endpoints reject ``json_object`` requests
+# unless the messages explicitly contain the English word "json".  A
+# dedicated system message satisfies that protocol requirement without
+# rewriting (or logging) the caller's system/user content.
+_JSON_OBJECT_INSTRUCTION = (
+    "Return exactly one valid json object. Do not include Markdown, code "
+    "fences, or any text outside the json object."
+)
+
+# Reasoning-capable OpenAI-compatible models may spend the entire completion
+# budget in ``reasoning_content`` and return an empty ``content`` with
+# ``finish_reason=length``.  Only the already-bounded output retry may receive
+# a larger budget, and it may never grow past this cap.
+_JSON_OUTPUT_RETRY_MAX_TOKENS = DEFAULT_MAX_OUTPUT_TOKENS
+
+
+def _json_output_retry_budget(current: int) -> int:
+    """Return one bounded, monotonic budget increase for a length retry."""
+    try:
+        budget = int(current)
+    except (TypeError, ValueError, OverflowError):
+        return current
+    if budget <= 0 or budget >= _JSON_OUTPUT_RETRY_MAX_TOKENS:
+        return current
+    return min(_JSON_OUTPUT_RETRY_MAX_TOKENS, max(budget + 1, budget * 2))
+
+
+def _token_budget_audit(value: Any) -> int:
+    """Normalize a token budget for prompt-safe diagnostic persistence."""
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _json_completion_messages(system: str, user: str) -> list[dict[str, str]]:
+    """Build JSON-mode messages while preserving both business prompts."""
+    return [
+        {"role": "system", "content": system},
+        {"role": "system", "content": _JSON_OBJECT_INSTRUCTION},
+        {"role": "user", "content": user},
+    ]
+
+
+def _coerce_http_status_code(value: Any) -> Optional[int]:
+    """Return a plausible HTTP status without depending on an SDK type."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        code = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return code if 100 <= code <= 599 else None
+
+
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    """Collect a bounded, cycle-safe cause/context chain."""
+    chain: list[BaseException] = []
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending and len(chain) < 8:
+        current = pending.pop(0)
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        chain.append(current)
+        for linked in (getattr(current, "__cause__", None),
+                       getattr(current, "__context__", None)):
+            if isinstance(linked, BaseException):
+                pending.append(linked)
+    return chain
+
+
+def _http_status_code(exc: BaseException) -> Optional[int]:
+    """Extract an HTTP code from common exception/response shapes or text."""
+    chain = _exception_chain(exc)
+    for current in chain:
+        candidates: list[Any] = [current]
+        try:
+            response = getattr(current, "response", None)
+        except Exception:  # pragma: no cover - defensive property access
+            response = None
+        if response is not None:
+            candidates.append(response)
+        for candidate in candidates:
+            if isinstance(candidate, dict):
+                values = (candidate.get("status_code"), candidate.get("status"))
+            else:
+                values = []
+                for attr in ("status_code", "status"):
+                    try:
+                        values.append(getattr(candidate, attr, None))
+                    except Exception:  # pragma: no cover - defensive property access
+                        values.append(None)
+            for value in values:
+                code = _coerce_http_status_code(value)
+                if code is not None:
+                    return code
+
+    # Lightweight/local compatibility servers sometimes expose only a message.
+    status_pattern = re.compile(
+        r"\b(?:http(?:\s+status)?|status(?:_code|\s+code)?|error\s+code)"
+        r"\s*[:=]?\s*([45]\d{2})\b",
+        re.IGNORECASE,
+    )
+    for current in chain:
+        match = status_pattern.search(str(current))
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _unsupported_json_response_format(exc: BaseException, status_code: Optional[int]) -> bool:
+    """Detect only an explicit 400 rejection of JSON response-format support."""
+    if status_code != 400:
+        return False
+    text = " ".join(str(item) for item in _exception_chain(exc)).lower()
+    mentions_format = any(token in text for token in (
+        "response_format", "response format", "json_object", "json object mode",
+    ))
+    explicitly_unsupported = any(token in text for token in (
+        "unsupported", "not supported", "does not support", "unknown parameter",
+        "unknown field", "unrecognized parameter", "unrecognized field",
+    ))
+    return mentions_format and explicitly_unsupported
+
+
+def _is_deterministic_client_error(status_code: Optional[int]) -> bool:
+    """Mirror conventional retry semantics: only transient 4xx remain retryable."""
+    return (
+        status_code is not None
+        and 400 <= status_code < 500
+        and status_code not in {408, 409, 425, 429}
+    )
+
+
+@dataclass(frozen=True)
+class JSONCompletionResult:
+    """JSON completion plus a prompt-safe, request-local audit record.
+
+    The object deliberately contains neither prompts nor raw model output.  It
+    is therefore safe to persist on a prediction even when the model returned
+    malformed content.  Keeping diagnostics in the return value (instead of a
+    module global) also makes concurrent event runs deterministic and
+    race-free.
+    """
+
+    value: Optional[dict[str, Any]]
+    failure_kind: Optional[str] = None
+    attempts: int = 0
+    finish_reason: Optional[str] = None
+    usage: dict[str, int] = field(default_factory=dict)
+    reasoning_length: int = 0
+    output_length: int = 0
+    recovered_json: bool = False
+    response_format_fallback: bool = False
+    max_tokens_initial: int = 0
+    max_tokens_peak: int = 0
+    output_budget_escalated: bool = False
+    elapsed_ms: int = 0
+
+    def audit_metadata(self) -> dict[str, Any]:
+        """Return the bounded subset intended for prediction persistence."""
+        return {
+            "output_failure_kind": self.failure_kind,
+            "output_attempts": max(0, int(self.attempts)),
+            "finish_reason": self.finish_reason,
+            "usage": dict(self.usage),
+            "reasoning_length": max(0, int(self.reasoning_length)),
+            "output_length": max(0, int(self.output_length)),
+            "recovered_json": bool(self.recovered_json),
+            "response_format_fallback": bool(self.response_format_fallback),
+            "max_tokens_initial": max(0, int(self.max_tokens_initial)),
+            "max_tokens_peak": max(0, int(self.max_tokens_peak)),
+            "output_budget_escalated": bool(self.output_budget_escalated),
+            "elapsed_ms": max(0, int(self.elapsed_ms)),
+        }
+
+
+def _response_usage(resp: Any) -> dict[str, int]:
+    """Normalize token usage without retaining provider-specific payloads."""
+    usage = getattr(resp, "usage", None)
+    if usage is None:
+        return {}
+    if isinstance(usage, dict):
+        raw = usage
+    else:
+        try:
+            raw = usage.model_dump()
+        except Exception:
+            raw = {
+                key: getattr(usage, key, None)
+                for key in (
+                    "prompt_tokens", "completion_tokens", "total_tokens",
+                    "input_tokens", "output_tokens",
+                )
+            }
+    if not isinstance(raw, dict):
+        return {}
+    aliases = {
+        "input_tokens": ("input_tokens", "prompt_tokens"),
+        "output_tokens": ("output_tokens", "completion_tokens"),
+        "total_tokens": ("total_tokens",),
+    }
+    result: dict[str, int] = {}
+    for canonical, keys in aliases.items():
+        value: Any = None
+        for key in keys:
+            if raw.get(key) is not None:
+                value = raw.get(key)
+                break
+        try:
+            parsed = max(0, int(value)) if value is not None else 0
+        except (TypeError, ValueError, OverflowError):
+            parsed = 0
+        if parsed:
+            result[canonical] = parsed
+    if "total_tokens" not in result and (
+        "input_tokens" in result or "output_tokens" in result
+    ):
+        result["total_tokens"] = (
+            result.get("input_tokens", 0) + result.get("output_tokens", 0)
+        )
+    return result
+
+
+def _merge_usage(total: dict[str, int], current: dict[str, int]) -> None:
+    for key in ("input_tokens", "output_tokens", "total_tokens"):
+        if key in current:
+            total[key] = total.get(key, 0) + max(0, int(current[key]))
+
+
+def _parse_json_object(text: str) -> tuple[Optional[dict[str, Any]], bool]:
+    """Parse an object, allowing one bounded extraction from prose/fences."""
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed, False
+    except json.JSONDecodeError:
+        pass
+    first, last = text.find("{"), text.rfind("}")
+    if first < 0 or last <= first:
+        return None, False
+    try:
+        parsed = json.loads(text[first:last + 1])
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None, False
+    return (parsed, True) if isinstance(parsed, dict) else (None, False)
+
+
+async def complete_text(system: str, user: str, *, max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS) -> str:
     """Non-streaming single completion (returns content only)."""
     client = get_client()
     resp = await _create_with_hard_timeout(client.chat.completions.create(
-        model=config.LLM_MODEL,
+        model=get_model_name(),
         messages=[{"role": "system", "content": system},
                   {"role": "user", "content": user}],
-        max_tokens=max_tokens,
+        max_tokens=output_token_limit(max_tokens),
     ))
     msg = resp.choices[0].message
     return (msg.content or "").strip()
 
 
-async def complete_json(system: str, user: str, *, max_tokens: int = 2000) -> Optional[dict]:
-    """Non-streaming completion forced to JSON object; returns parsed dict or None.
+async def complete_json_diagnostic(
+    system: str,
+    user: str,
+    *,
+    max_tokens: int = DEFAULT_STRUCTURED_OUTPUT_TOKENS,
+    request_gate: Optional[Callable[[], Awaitable[None]]] = None,
+) -> JSONCompletionResult:
+    """Complete one JSON object and return bounded, concurrency-safe diagnostics.
+
+    A successful HTTP response with empty or malformed content receives one
+    additional output attempt.  This retry budget is independent from the
+    existing transient-error budget (429/5xx/timeout: at most three attempts),
+    so neither path can loop indefinitely.
+
        MAAS/Ark 有 1 RPS + 首包慢 + 429；内部自动最多 3 次指数退避重试。
 
        优化（2026-08-19）：
-       - max_tokens 3000 → 2000（路由判断 / labeller 均不需要 3k tokens，减生成时间）
+       - 输出预算按任务分配，仍以冻结的模型连接上限为界；思考与最终 JSON 共享额度。
        - 重试 4 → 3 次（最坏总等待 9s→5s，避免单请求阻塞太久）
        - sleep 上限 9s → 5s（同上）
        - 日志加 [SLOW|VSLOW] 标签（>5s / >15s）
@@ -441,65 +872,210 @@ async def complete_json(system: str, user: str, *, max_tokens: int = 2000) -> Op
     client = get_client()
     import asyncio as _ai
     last_err: Optional[BaseException] = None
-    _MAX_ATTEMPTS = 3
-    for attempt in range(1, _MAX_ATTEMPTS + 1):
+    _MAX_TRANSIENT_ATTEMPTS = 3
+    _MAX_OUTPUT_ATTEMPTS = 2
+    transient_attempts = 0
+    output_attempts = 0
+    request_no = 0
+    use_response_format = True
+    format_fallback_used = False
+    request_max_tokens = output_token_limit(max_tokens)
+    max_tokens_initial = _token_budget_audit(request_max_tokens)
+    max_tokens_peak = max_tokens_initial
+    output_budget_escalated = False
+    usage_total: dict[str, int] = {}
+    reasoning_length_total = 0
+    call_started = time.monotonic()
+    last_finish_reason: Optional[str] = None
+    last_output_length = 0
+    last_failure_kind: Optional[str] = None
+    last_recovered = False
+    while transient_attempts < _MAX_TRANSIENT_ATTEMPTS:
+        request_no += 1
         _t0 = time.time()
         try:
-            resp = await _create_with_hard_timeout(client.chat.completions.create(
-                model=config.LLM_MODEL,
-                messages=[{"role": "system", "content": system},
-                          {"role": "user", "content": user}],
-                max_tokens=max_tokens,
-                response_format={"type": "json_object"},
-            ))
+            request_kwargs: dict[str, Any] = {
+                "model": get_model_name(),
+                "messages": _json_completion_messages(system, user),
+                "max_tokens": request_max_tokens,
+            }
+            if use_response_format:
+                request_kwargs["response_format"] = {"type": "json_object"}
+            # Optional per-run scheduler used by bulk event backtests.  It is
+            # invoked for every actual transport attempt, including format,
+            # malformed-output, and transient-error retries.
+            if request_gate is not None:
+                await request_gate()
+            resp = await _create_with_hard_timeout(
+                client.chat.completions.create(**request_kwargs)
+            )
             _dur = time.time() - _t0
             _tag = " [VSLOW]" if _dur > 15 else (" [SLOW]" if _dur > 5 else "")
-            text = (resp.choices[0].message.content or "").strip()
+            choices = getattr(resp, "choices", None) or []
+            choice = choices[0] if choices else None
+            msg = getattr(choice, "message", None) if choice is not None else None
+            raw_finish = getattr(choice, "finish_reason", None) if choice is not None else None
+            last_finish_reason = str(raw_finish) if raw_finish is not None else None
+            _merge_usage(usage_total, _response_usage(resp))
+            reasoning = getattr(msg, "reasoning_content", None) if msg is not None else None
+            if isinstance(reasoning, str):
+                reasoning_length_total += len(reasoning)
+            raw_content = getattr(msg, "content", None) if msg is not None else None
+            text = raw_content.strip() if isinstance(raw_content, str) else ""
+            last_output_length = len(text)
+            output_attempts += 1
             if not text:
-                print(f"LLM_JSON attempt={attempt}/{_MAX_ATTEMPTS} ok=false err=empty dur={_dur:.2f}s{_tag}", flush=True)
-                publish(f"LLM_JSON attempt={attempt}/{_MAX_ATTEMPTS} ok=false err=empty dur={_dur:.2f}s{_tag}")
-                return None
-            try:
-                result = json.loads(text)
-                print(f"LLM_JSON attempt={attempt}/{_MAX_ATTEMPTS} ok=true dur={_dur:.2f}s{_tag}", flush=True)
-                publish(f"LLM_JSON attempt={attempt}/{_MAX_ATTEMPTS} ok=true dur={_dur:.2f}s{_tag}")
-                return result
-            except json.JSONDecodeError:
-                print(f"LLM_JSON attempt={attempt}/{_MAX_ATTEMPTS} ok=false err=json_decode dur={_dur:.2f}s{_tag}", flush=True)
-                publish(f"LLM_JSON attempt={attempt}/{_MAX_ATTEMPTS} ok=false err=json_decode dur={_dur:.2f}s{_tag}")
-                m = text[text.find("{"): text.rfind("}") + 1]
-                try:
-                    result = json.loads(m)
-                    print(f"LLM_JSON attempt={attempt}/{_MAX_ATTEMPTS} ok=true(recovered) dur={_dur:.2f}s{_tag}", flush=True)
-                    publish(f"LLM_JSON attempt={attempt}/{_MAX_ATTEMPTS} ok=true(recovered) dur={_dur:.2f}s{_tag}")
-                    return result
-                except Exception:  # noqa: BLE001
-                    return None
+                last_failure_kind = "empty_response"
+                print(f"LLM_JSON attempt={request_no} ok=false err=empty dur={_dur:.2f}s{_tag}", flush=True)
+                publish(f"LLM_JSON attempt={request_no} ok=false err=empty dur={_dur:.2f}s{_tag}")
+            else:
+                result, recovered = _parse_json_object(text)
+                if result is not None:
+                    last_recovered = recovered
+                    suffix = "(recovered)" if recovered else ""
+                    print(f"LLM_JSON attempt={request_no} ok=true{suffix} dur={_dur:.2f}s{_tag}", flush=True)
+                    publish(f"LLM_JSON attempt={request_no} ok=true{suffix} dur={_dur:.2f}s{_tag}")
+                    return JSONCompletionResult(
+                        value=result,
+                        attempts=request_no,
+                        finish_reason=last_finish_reason,
+                        usage=usage_total,
+                        reasoning_length=reasoning_length_total,
+                        output_length=last_output_length,
+                        recovered_json=recovered,
+                        response_format_fallback=format_fallback_used,
+                        max_tokens_initial=max_tokens_initial,
+                        max_tokens_peak=max_tokens_peak,
+                        output_budget_escalated=output_budget_escalated,
+                        elapsed_ms=max(0, int((time.monotonic() - call_started) * 1000)),
+                    )
+                last_failure_kind = "json_decode_error"
+                print(f"LLM_JSON attempt={request_no} ok=false err=json_decode dur={_dur:.2f}s{_tag}", flush=True)
+                publish(f"LLM_JSON attempt={request_no} ok=false err=json_decode dur={_dur:.2f}s{_tag}")
+
+            if output_attempts < _MAX_OUTPUT_ATTEMPTS:
+                previous_budget = request_max_tokens
+                if last_finish_reason == "length":
+                    request_max_tokens = output_token_limit(_json_output_retry_budget(request_max_tokens))
+                if _token_budget_audit(request_max_tokens) > _token_budget_audit(previous_budget):
+                    output_budget_escalated = True
+                    max_tokens_peak = max(
+                        max_tokens_peak,
+                        _token_budget_audit(request_max_tokens),
+                    )
+                print(
+                    f"LLM_JSON attempt={request_no} output_retry=1 "
+                    f"reason={last_failure_kind} finish={last_finish_reason} "
+                    f"next_max_tokens={_token_budget_audit(request_max_tokens)} "
+                    f"budget_escalated={str(output_budget_escalated).lower()} [RETRY]",
+                    flush=True,
+                )
+                publish(
+                    f"LLM_JSON attempt={request_no} output_retry=1 "
+                    f"reason={last_failure_kind} finish={last_finish_reason} "
+                    f"next_max_tokens={_token_budget_audit(request_max_tokens)} "
+                    f"budget_escalated={str(output_budget_escalated).lower()} [RETRY]"
+                )
+                continue
+            return JSONCompletionResult(
+                value=None,
+                failure_kind=last_failure_kind,
+                attempts=request_no,
+                finish_reason=last_finish_reason,
+                usage=usage_total,
+                reasoning_length=reasoning_length_total,
+                output_length=last_output_length,
+                recovered_json=last_recovered,
+                response_format_fallback=format_fallback_used,
+                max_tokens_initial=max_tokens_initial,
+                max_tokens_peak=max_tokens_peak,
+                output_budget_escalated=output_budget_escalated,
+                elapsed_ms=max(0, int((time.monotonic() - call_started) * 1000)),
+            )
         except BaseException as e:  # noqa: BLE001
             # 前端断开 / 主动取消 → 立刻传播，不当普通错误重试
             # （否则前端断了后端还在跑 LLM，白白浪费配额 + 阻塞 worker）
             if isinstance(e, (asyncio.CancelledError, KeyboardInterrupt)):
                 _dur = time.time() - _t0
-                print(f"LLM_JSON attempt={attempt}/{_MAX_ATTEMPTS} cancelled dur={_dur:.2f}s [CANCELLED]", flush=True)
-                publish(f"LLM_JSON attempt={attempt}/{_MAX_ATTEMPTS} cancelled dur={_dur:.2f}s [CANCELLED]")
+                print(f"LLM_JSON attempt={request_no} cancelled dur={_dur:.2f}s [CANCELLED]", flush=True)
+                publish(f"LLM_JSON attempt={request_no} cancelled dur={_dur:.2f}s [CANCELLED]")
                 raise
             _dur = time.time() - _t0
+            status_code = _http_status_code(e)
+
+            # A few local/OpenAI-compatible servers do not implement
+            # response_format.  Only an explicit unsupported-format 400 earns
+            # one plain request; the independent JSON instruction remains in
+            # messages and parsing stays local.  Any other 400 fails fast.
+            if (
+                use_response_format
+                and not format_fallback_used
+                and _unsupported_json_response_format(e, status_code)
+            ):
+                format_fallback_used = True
+                use_response_format = False
+                print(
+                    f"LLM_JSON attempt={request_no} ok=false status=400 "
+                    f"err={type(e).__name__} dur={_dur:.2f}s [FORMAT_FALLBACK]",
+                    flush=True,
+                )
+                publish(
+                    f"LLM_JSON attempt={request_no} ok=false status=400 "
+                    f"err={type(e).__name__} dur={_dur:.2f}s [FORMAT_FALLBACK]"
+                )
+                continue
+
+            if _is_deterministic_client_error(status_code):
+                print(
+                    f"LLM_JSON attempt={request_no} ok=false status={status_code} "
+                    f"err={type(e).__name__} dur={_dur:.2f}s [GIVEUP]",
+                    flush=True,
+                )
+                publish(
+                    f"LLM_JSON attempt={request_no} ok=false status={status_code} "
+                    f"err={type(e).__name__} dur={_dur:.2f}s [GIVEUP]"
+                )
+                raise
+
             last_err = e
-            if attempt >= _MAX_ATTEMPTS:
-                print(f"LLM_JSON attempt={attempt}/{_MAX_ATTEMPTS} ok=false err={type(e).__name__} dur={_dur:.2f}s [GIVEUP]", flush=True)
-                publish(f"LLM_JSON attempt={attempt}/{_MAX_ATTEMPTS} ok=false err={type(e).__name__} dur={_dur:.2f}s [GIVEUP]")
+            transient_attempts += 1
+            if transient_attempts >= _MAX_TRANSIENT_ATTEMPTS:
+                status_part = f" status={status_code}" if status_code is not None else ""
+                print(f"LLM_JSON attempt={request_no} ok=false{status_part} err={type(e).__name__} dur={_dur:.2f}s [GIVEUP]", flush=True)
+                publish(f"LLM_JSON attempt={request_no} ok=false{status_part} err={type(e).__name__} dur={_dur:.2f}s [GIVEUP]")
                 break
             # 429 / 超时 / 远端连接失败 → 指数退避，更长等待
             msg = str(e)
-            sleep_s = min(5.0, (2.0 ** (attempt - 1)) * 1.0 + 0.3)
-            if "429" in msg or "TooManyRequests" in msg or "RateLimit" in msg or "rate limit" in msg:
+            sleep_s = min(5.0, (2.0 ** (transient_attempts - 1)) * 1.0 + 0.3)
+            if status_code == 429 or "TooManyRequests" in msg or "RateLimit" in msg or "rate limit" in msg:
                 sleep_s += 0.5
-            print(f"LLM_JSON attempt={attempt}/{_MAX_ATTEMPTS} err={type(e).__name__} dur={_dur:.2f}s sleep={sleep_s:.1f}s [RETRY]", flush=True)
-            publish(f"LLM_JSON attempt={attempt}/{_MAX_ATTEMPTS} err={type(e).__name__} dur={_dur:.2f}s sleep={sleep_s:.1f}s [RETRY]")
+            status_part = f" status={status_code}" if status_code is not None else ""
+            print(f"LLM_JSON attempt={request_no}{status_part} err={type(e).__name__} dur={_dur:.2f}s sleep={sleep_s:.1f}s [RETRY]", flush=True)
+            publish(f"LLM_JSON attempt={request_no}{status_part} err={type(e).__name__} dur={_dur:.2f}s sleep={sleep_s:.1f}s [RETRY]")
             await _ai.sleep(sleep_s)
     if last_err is not None:
         raise last_err
-    return None
+    return JSONCompletionResult(
+        value=None,
+        failure_kind=last_failure_kind,
+        attempts=request_no,
+        finish_reason=last_finish_reason,
+        usage=usage_total,
+        reasoning_length=reasoning_length_total,
+        output_length=last_output_length,
+        recovered_json=last_recovered,
+        response_format_fallback=format_fallback_used,
+        max_tokens_initial=max_tokens_initial,
+        max_tokens_peak=max_tokens_peak,
+        output_budget_escalated=output_budget_escalated,
+        elapsed_ms=max(0, int((time.monotonic() - call_started) * 1000)),
+    )
+
+
+async def complete_json(system: str, user: str, *, max_tokens: int = DEFAULT_STRUCTURED_OUTPUT_TOKENS) -> Optional[dict]:
+    """Backward-compatible JSON helper returning only the parsed object."""
+    result = await complete_json_diagnostic(system, user, max_tokens=max_tokens)
+    return result.value
 
 
 def _response_output_text(resp: Any) -> str:
@@ -530,16 +1106,16 @@ async def complete_json_with_web_search(
     user: str,
     *,
     max_keywords: int = 3,
-    max_output_tokens: int = 2500,
+    max_output_tokens: int = DEFAULT_STRUCTURED_OUTPUT_TOKENS,
 ) -> Optional[dict]:
     """Responses API + Ark web_search, returning parsed JSON or None."""
     client = get_client()
     resp = await client.responses.create(
-        model=config.LLM_MODEL,
+        model=get_model_name(),
         instructions=system,
         input=user,
         tools=[{"type": "web_search", "max_keyword": max(1, min(int(max_keywords or 3), 10))}],
-        max_output_tokens=max_output_tokens,
+        max_output_tokens=output_token_limit(max_output_tokens),
     )
     text = _response_output_text(resp)
     if not text:

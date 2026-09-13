@@ -96,6 +96,7 @@ class MetricsSummary:
     avg_car_avg_all: float = 0.0
     acc_by_market: dict[str, dict[str, Any]] = field(default_factory=dict)
     acc_by_type: dict[str, dict[str, Any]] = field(default_factory=dict)
+    return_forecast: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -159,6 +160,8 @@ def compute_metrics(
         primary_oracle_horizon = "t3"
 
     pred_by_id = {p.event_id: p for p in predictions if p.event_id}
+    from .return_forecast import compute_return_forecast
+    return_forecast = compute_return_forecast(predictions, labels, horizon=primary_oracle_horizon)
     pairs: list[tuple[TeamPrediction, EventLabel]] = []
     for lab in labels:
         p = pred_by_id.get(lab.event_id)
@@ -170,7 +173,22 @@ def compute_metrics(
     n_abstain_pred = sum(1 for p, _ in pairs if p.abstain)
 
     def _label_of(lab: EventLabel, h: str) -> Label:
-        return getattr(lab, f"label_{h}", "") or ""
+        direction = str(getattr(lab, f"label_{h}", "") or "").strip().lower()
+        if direction not in {"up", "down", "neutral"}:
+            return ""
+        # A direction string without the matching realized return is not an
+        # Oracle outcome. Counting it would make missing market data look like
+        # scored accuracy. consensus66 has no dedicated CAR field, so require
+        # at least one genuine component horizon instead.
+        if h == "consensus66":
+            component_cars = [getattr(lab, f"car_{name}", None) for name in ("t3", "t7", "t15", "t30", "t60")]
+            if not any(isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)) for value in component_cars):
+                return ""
+        else:
+            car = getattr(lab, f"car_{h}", None)
+            if not isinstance(car, (int, float)) or isinstance(car, bool) or not math.isfinite(float(car)):
+                return ""
+        return direction  # type: ignore[return-value]
 
     n_abstain_oracle = sum(1 for _, lab in pairs if not _label_of(lab, primary_oracle_horizon).strip())
 
@@ -192,7 +210,13 @@ def compute_metrics(
     n_non_significant = len(non_sig_event_ids)
 
     def _evaluate(h: str):
-        """返回 (strict_acc, non_neutral_acc_for_primary_or_None, sign_only_acc_for_primary_or_None)"""
+        """Return strict/non-neutral/significant stats for one horizon.
+
+        Older code only populated the latter two when ``h`` was the primary
+        horizon. That made the backwards-compatible T3 fields empty as soon as a
+        user selected T5/T15/etc. Computing each horizon independently preserves
+        both the selected evaluation and the explicit T3 compatibility fields.
+        """
         rows = []
         for p, lab in pairs:
             lab_h: Label = _label_of(lab, h)
@@ -210,32 +234,28 @@ def compute_metrics(
             if p.pred_direction == lab_h: k_s += 1
         strict = _mk_wilson(n_s, k_s)
 
-        non_neutral: AccWithWilson | None = None
-        significant_only: AccWithWilson | None = None
-        if h == primary_oracle_horizon:
-            n_nn = 0; k_nn = 0
-            for p, lab_h, pa, oa in rows:
-                if pa or oa: continue
-                if lab_h not in {"up","down"}: continue
-                n_nn += 1
-                if p.pred_direction == lab_h: k_nn += 1
-            non_neutral = _mk_wilson(n_nn, k_nn)
+        n_nn = 0; k_nn = 0
+        for p, lab_h, pa, oa in rows:
+            if pa or oa: continue
+            if lab_h not in {"up","down"}: continue
+            n_nn += 1
+            if p.pred_direction == lab_h: k_nn += 1
+        non_neutral: AccWithWilson | None = _mk_wilson(n_nn, k_nn)
 
-            # significant_only —— 只对 primary horizon 计算：pvalue < 0.10 且 非abstain
-            n_sig = 0; k_sig = 0
-            for p, lab in pairs:
-                if p.abstain: continue
-                pkey = f"car_{h}_pvalue"
-                p_val = getattr(lab, pkey, None)
-                if h == "t3" and p_val is None:
-                    p_val = getattr(lab, "car_t3_pvalue", None)
-                if p_val is None or p_val >= 0.10: continue
-                lh = _label_of(lab, h)
-                if not lh.strip(): continue
-                n_sig += 1
-                if lh == "neutral": continue
-                if p.pred_direction == lh: k_sig += 1
-            significant_only = _mk_wilson(n_sig, k_sig)
+        n_sig = 0; k_sig = 0
+        for p, lab in pairs:
+            if p.abstain: continue
+            pkey = f"car_{h}_pvalue"
+            p_val = getattr(lab, pkey, None)
+            if h == "t3" and p_val is None:
+                p_val = getattr(lab, "car_t3_pvalue", None)
+            if p_val is None or p_val >= 0.10: continue
+            lh = _label_of(lab, h)
+            if not lh.strip(): continue
+            n_sig += 1
+            if lh == "neutral": continue
+            if p.pred_direction == lh: k_sig += 1
+        significant_only: AccWithWilson | None = _mk_wilson(n_sig, k_sig)
         return strict, non_neutral, significant_only
 
     # Evaluate all 12 horizons
@@ -339,5 +359,5 @@ def compute_metrics(
         avg_car_avg_all=avg_car_avg_all,
         acc_by_market=group_acc(group_key_market),
         acc_by_type=group_acc(group_key_type),
+        return_forecast=return_forecast,
     )
-

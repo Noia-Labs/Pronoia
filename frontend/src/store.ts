@@ -243,11 +243,118 @@ export function partsFromHistory(m: HistoryMessage): Part[] {
 
 /* ---------------- store ---------------- */
 
-/** P0 视图：chat（研究工作台）/ backtest-list（回测列表页）/ backtest-detail（回测详情页）
- *  arena-list（Arena 比对列表）/ arena-detail（Arena 比对详情）
+/**
+ * 页面路由的 store 表示。`backtest-list` 保留为旧代码兼容别名，
+ * setView 会将它统一导航到回测首页“运行记录”。
  */
-export type ViewName = "chat" | "backtest-list" | "backtest-detail" | "arena-list" | "arena-detail" | "prospective-list" | "prospective-detail";
+export type ViewName =
+  | "chat"
+  | "backtest-event"
+  | "backtest-quant"
+  | "backtest-runs"
+  | "backtest-list"
+  | "backtest-model-lab"
+  | "backtest-data"
+  | "backtest-detail"
+  | "arena-list"
+  | "arena-detail"
+  | "prospective-list"
+  | "prospective-detail";
 
+interface RouteSnapshot {
+  view: Exclude<ViewName, "backtest-list">;
+  currentBTRunId: string | null;
+  currentArenaId: string | null;
+  currentProspectiveRunId: string | null;
+}
+
+function routeFromLocation(): RouteSnapshot {
+  if (typeof window === "undefined") {
+    return {
+      view: "chat",
+      currentBTRunId: null,
+      currentArenaId: null,
+      currentProspectiveRunId: null,
+    };
+  }
+  const path = window.location.pathname.replace(/\/+$/, "") || "/";
+  const btDetail = path.match(/^\/backtest\/runs\/([^/]+)$/);
+  if (btDetail) {
+    return {
+      view: "backtest-detail",
+      currentBTRunId: decodeURIComponent(btDetail[1]),
+      currentArenaId: null,
+      currentProspectiveRunId: null,
+    };
+  }
+  const arenaDetail = path.match(/^\/arena\/([^/]+)$/);
+  if (arenaDetail) {
+    return {
+      view: "arena-detail",
+      currentBTRunId: null,
+      currentArenaId: decodeURIComponent(arenaDetail[1]),
+      currentProspectiveRunId: null,
+    };
+  }
+  const prospectiveDetail = path.match(/^\/prospective\/([^/]+)$/);
+  if (prospectiveDetail) {
+    return {
+      view: "prospective-detail",
+      currentBTRunId: null,
+      currentArenaId: null,
+      currentProspectiveRunId: decodeURIComponent(prospectiveDetail[1]),
+    };
+  }
+  const views: Record<string, RouteSnapshot["view"]> = {
+    "/backtest/event": "backtest-event",
+    "/backtest/quant": "backtest-quant",
+    "/backtest/runs": "backtest-runs",
+    "/backtest/model-lab": "backtest-model-lab",
+    "/backtest/data": "backtest-data",
+    "/backtest": "backtest-runs",
+    "/arena": "arena-list",
+    "/prospective": "prospective-list",
+  };
+  return {
+    view: views[path] ?? "chat",
+    currentBTRunId: null,
+    currentArenaId: null,
+    currentProspectiveRunId: null,
+  };
+}
+
+function pathForView(
+  view: ViewName,
+  state: Pick<RouteSnapshot, "currentBTRunId" | "currentArenaId" | "currentProspectiveRunId">,
+): string {
+  const normalized = view === "backtest-list" ? "backtest-runs" : view;
+  const paths: Partial<Record<ViewName, string>> = {
+    chat: "/",
+    "backtest-event": "/backtest/event",
+    "backtest-quant": "/backtest/quant",
+    "backtest-runs": "/backtest/runs",
+    "backtest-model-lab": "/backtest/model-lab",
+    "backtest-data": "/backtest/data",
+    "arena-list": "/arena",
+    "prospective-list": "/prospective",
+  };
+  if (normalized === "backtest-detail" && state.currentBTRunId) {
+    return `/backtest/runs/${encodeURIComponent(state.currentBTRunId)}`;
+  }
+  if (normalized === "arena-detail" && state.currentArenaId) {
+    return `/arena/${encodeURIComponent(state.currentArenaId)}`;
+  }
+  if (normalized === "prospective-detail" && state.currentProspectiveRunId) {
+    return `/prospective/${encodeURIComponent(state.currentProspectiveRunId)}`;
+  }
+  return paths[normalized] ?? "/";
+}
+
+function pushRoute(path: string, replace = false) {
+  if (typeof window === "undefined") return;
+  if (window.location.pathname === path) return;
+  window.history[replace ? "replaceState" : "pushState"]({}, "", path);
+}
 interface FeverState {
   cases: CaseItem[];
   currentCaseId: string | null;
@@ -344,6 +451,8 @@ interface FeverState {
 
   /* ---- Backtest 方法 ---- */
   setView: (v: ViewName) => void;
+  /** 响应 popstate，只同步 store，不再写入 history。 */
+  syncRouteFromLocation: () => void;
   /** 进入某个回测详情页（自动 setView("backtest-detail")） */
   openBTDetail: (runId: string) => void;
   /** 返回回测列表或 chat 工作台 */
@@ -387,6 +496,7 @@ if (typeof window !== "undefined") {
 
 export const useStore = create<FeverState>((set, get) => {
   const prefs = loadUIPrefs();
+  const initialRoute = routeFromLocation();
   const initialTeamMembersSet =
     prefs.teamMembersSet === true ||
     (prefs.teamMembersSet == null && Object.prototype.hasOwnProperty.call(prefs, "teamMembers"));
@@ -555,16 +665,16 @@ export const useStore = create<FeverState>((set, get) => {
     liveLogOpen: false,
 
     /* ---- Backtest 默认值 ---- */
-    view: "chat",
-    currentBTRunId: null,
+    view: initialRoute.view,
+    currentBTRunId: initialRoute.currentBTRunId,
     btRuns: [],
     btRunsLoading: false,
 
     /* ---- Arena 默认值 ---- */
     arenaItems: [],
     arenaLoading: false,
-    currentArenaId: null,
-    currentProspectiveRunId: null,
+    currentArenaId: initialRoute.currentArenaId,
+    currentProspectiveRunId: initialRoute.currentProspectiveRunId,
 
     init: async () => {
       if (get().initialized) return;
@@ -1089,17 +1199,40 @@ export const useStore = create<FeverState>((set, get) => {
     setView: (v) => {
       // 切页面前如果 chat 在 streaming，则先停掉，避免挂起的 SSE 泄漏
       if (v !== "chat" && get().streaming) get().stop();
-      set({ view: v });
+      const view = v === "backtest-list" ? "backtest-runs" : v;
+      const next = {
+        view,
+        currentBTRunId: view === "backtest-detail" ? get().currentBTRunId : null,
+        currentArenaId: view === "arena-detail" ? get().currentArenaId : null,
+        currentProspectiveRunId:
+          view === "prospective-detail" ? get().currentProspectiveRunId : null,
+      };
+      set(next);
+      pushRoute(pathForView(view, next));
+    },
+
+    syncRouteFromLocation: () => {
+      const route = routeFromLocation();
+      if (route.view !== "chat" && get().streaming) get().stop();
+      set(route);
     },
 
     openBTDetail: (runId) => {
       if (get().streaming) get().stop();
-      set({ view: "backtest-detail", currentBTRunId: runId });
+      const next = {
+        view: "backtest-detail" as const,
+        currentBTRunId: runId,
+        currentArenaId: null,
+        currentProspectiveRunId: null,
+      };
+      set(next);
+      pushRoute(pathForView(next.view, next));
     },
 
     backFromBTDetail: () => {
       // 详情页返回列表页；列表数据以最新 DB 为准（详情页运行期间的进度不再向 store 双写）
-      set({ view: "backtest-list", currentBTRunId: null });
+      set({ view: "backtest-runs", currentBTRunId: null });
+      pushRoute("/backtest/runs");
       void get().loadBTRuns(true);
     },
 
@@ -1128,11 +1261,19 @@ export const useStore = create<FeverState>((set, get) => {
 
     openArenaDetail: (arenaId) => {
       if (get().streaming) get().stop();
-      set({ view: "arena-detail", currentArenaId: arenaId });
+      const next = {
+        view: "arena-detail" as const,
+        currentArenaId: arenaId,
+        currentBTRunId: null,
+        currentProspectiveRunId: null,
+      };
+      set(next);
+      pushRoute(pathForView(next.view, next));
     },
 
     backFromArenaDetail: () => {
       set({ view: "arena-list", currentArenaId: null });
+      pushRoute("/arena");
       void get().loadArenas(true);
     },
 
@@ -1155,8 +1296,22 @@ export const useStore = create<FeverState>((set, get) => {
       }));
     },
 
-    openProspectiveDetail: (runId) => set({ view: "prospective-detail", currentProspectiveRunId: runId }),
-    backFromProspectiveDetail: () => set({ view: "prospective-list", currentProspectiveRunId: null }),
+    openProspectiveDetail: (runId) => {
+      if (get().streaming) get().stop();
+      const next = {
+        view: "prospective-detail" as const,
+        currentProspectiveRunId: runId,
+        currentBTRunId: null,
+        currentArenaId: null,
+      };
+      set(next);
+      pushRoute(pathForView(next.view, next));
+    },
+
+    backFromProspectiveDetail: () => {
+      set({ view: "prospective-list", currentProspectiveRunId: null });
+      pushRoute("/prospective");
+    },
   };
 });
 

@@ -15,6 +15,7 @@ import math
 import akshare as ak
 import pandas as pd
 
+from ..market_runtime import call_sina_history
 from .market import (
     _clean_ohlcv,
     is_a_share_index_symbol,
@@ -29,7 +30,7 @@ from . import cache
 
 def _fetch_stock_close(sym: str, start8: str, end8: str) -> tuple[pd.DataFrame, str]:
     try:
-        df = ak.stock_zh_a_daily(symbol=sym, start_date=start8, end_date=end8, adjust="qfq")
+        df = call_sina_history(ak.stock_zh_a_daily, symbol=sym, start_date=start8, end_date=end8, adjust="qfq")
         if df is None or len(df) == 0:
             raise ValueError("sina 日K为空")
         src = "akshare.stock_zh_a_daily"
@@ -50,7 +51,7 @@ def _fetch_stock_close(sym: str, start8: str, end8: str) -> tuple[pd.DataFrame, 
 def _fetch_a_share_index_close(sym: str, start8: str) -> tuple[pd.DataFrame, str]:
     """A 股指数日K。返回 [date, close] + 数据源。"""
     try:
-        df = ak.stock_zh_index_daily(symbol=sym)
+        df = call_sina_history(ak.stock_zh_index_daily, symbol=sym)
     except Exception as e:  # noqa: BLE001
         raise ValueError(f"指数 {sym} 获取失败: {type(e).__name__}: {e}")
     if df is None or len(df) == 0:
@@ -65,7 +66,7 @@ def _fetch_a_share_index_close(sym: str, start8: str) -> tuple[pd.DataFrame, str
 def _fetch_us_close(sym: str) -> tuple[pd.DataFrame, str]:
     """美股日K（akshare.stock_us_daily）。返回 [date, close] + 数据源。"""
     try:
-        df = ak.stock_us_daily(symbol=sym, adjust="qfq")
+        df = call_sina_history(ak.stock_us_daily, symbol=sym, adjust="qfq")
     except Exception as e:  # noqa: BLE001
         raise ValueError(f"美股 {sym} 日K获取失败: {type(e).__name__}: {e}")
     if df is None or len(df) == 0:
@@ -84,8 +85,8 @@ def _fetch_us_index_close(sym: str) -> tuple[pd.DataFrame, str]:
     "事件研究法：以事件日为 T0，计算窗口 [-pre,+post] 内个股相对指数的超额收益 AR 与累计超额收益 CAR，"
     "并给出事件日前5日/后5日累计收益、CAR终值、事件日涨跌幅。收益单位%。"
     "支持 A 股（6 位代码）与 美股（ticker，A 股默认基准 sh000300，美股默认 SPY）。"
-    "【as_of 严格模式】当 as_of=True 时，仅返回事件日及之前的数据，绝不包含任何 post-event 信息"
-    "（禁止计算/返回 postN_car_endpoint_pct / post5_cum_return 等未来指标，窗口截断至 T0）。",
+    "【as_of 严格模式】当 as_of=True 时，仅返回信息可得日前一交易日收盘及之前的数据，绝不包含任何 post-event 信息"
+    "（禁止计算/返回事件日涨跌或 postN_car_endpoint_pct / post5_cum_return 等未来指标）。",
     {
         "type": "object",
         "properties": {
@@ -108,7 +109,8 @@ def event_study(symbol: str, event_date: str, pre: int = 20, post: int = 20,
         except ValueError:
             return err(f"无法识别事件日: {event_date}")
         pre = max(1, min(int(pre or 20), 60))
-        # as_of 模式下强制 post=0，窗口截断到 T0 当天
+        # as_of 模式下强制 post=0；下方还会把可见行情严格
+        # 截断在事件日前一交易日收盘，避免盘前/盘中事件看到 T0 收盘。
         if as_of:
             post = 0
         post = max(0, min(int(post or 0), 60))
@@ -132,7 +134,7 @@ def event_study(symbol: str, event_date: str, pre: int = 20, post: int = 20,
             else:
                 stock_df, src_stock = _fetch_stock_close(sym, start8, end8)
             try:
-                idx_raw = ak.stock_zh_index_daily(symbol=idx_sym)
+                idx_raw = call_sina_history(ak.stock_zh_index_daily, symbol=idx_sym)
             except Exception as e:  # noqa: BLE001
                 return err(f"基准指数 {idx_sym} 获取失败: {type(e).__name__}: {e}")
             if idx_raw is None or len(idx_raw) == 0:
@@ -151,6 +153,7 @@ def event_study(symbol: str, event_date: str, pre: int = 20, post: int = 20,
             return err(f"对齐后交易日不足（{len(df)} 天），无法构造 [-{pre},+{post}] 窗口")
         df["r_stock"] = df["close"].pct_change() * 100.0
         df["r_index"] = df["idx_close"].pct_change() * 100.0
+        df["ar"] = df["r_stock"] - df["r_index"]
 
         ev_iso = ev.isoformat()
         ge = df.index[df["date"] >= ev_iso].tolist()
@@ -161,9 +164,8 @@ def event_study(symbol: str, event_date: str, pre: int = 20, post: int = 20,
         i_start = t0 - pre
         if i_start < 1:  # 需要 i_start-1 计算首日收益
             return err(f"事件日前可用交易日不足 {pre} 天（仅 {t0} 天）")
-        i_end = min(t0 + post, len(df) - 1)
+        i_end = (t0 - 1) if as_of else min(t0 + post, len(df) - 1)
         win = df.loc[i_start:i_end].copy()
-        win["ar"] = win["r_stock"] - win["r_index"]
         win["car"] = win["ar"].cumsum()
         win["t"] = range(-pre, -pre + len(win))
 
@@ -200,8 +202,12 @@ def event_study(symbol: str, event_date: str, pre: int = 20, post: int = 20,
                 "car": None if pd.isna(r["car"]) else round(float(r["car"]), 4),
             })
         day0_rows = df.loc[t0]
-        # as_of 模式下禁止计算 post-event 指标（未来函数）；仅返回事件当日及之前的信号
+        # The tool receives a date, not a reliable intraday timestamp. The only
+        # universally safe cutoff is the previous trading close. This is
+        # conservative for post-close announcements but never leaks T0 close
+        # into a pre-open/intraday decision.
         if as_of:
+            prior_close_day = str(df.loc[t0 - 1, "date"])
             summary = {
                 "symbol": sym,
                 "index_symbol": idx_sym,
@@ -209,30 +215,28 @@ def event_study(symbol: str, event_date: str, pre: int = 20, post: int = 20,
                 "event_date_requested": ev_iso,
                 "event_day": actual_event_day,
                 "event_day_is_trading_day": actual_event_day == ev_iso,
-                "window": f"[-{pre}, 0] 交易日（strict as-of 模式：已截断 post-event 数据，禁止未来函数）",
-                "event_day_change_pct": (None if pd.isna(day0_rows["r_stock"])
-                                         else round(float(day0_rows["r_stock"]), 4)),
-                "event_day_idx_change_pct": (None if pd.isna(day0_rows["r_index"])
-                                             else round(float(day0_rows["r_index"]), 4)),
-                "event_day_ar_pct": (None if pd.isna(day0_rows["r_stock"]) or pd.isna(day0_rows["r_index"])
-                                     else round(float(day0_rows["r_stock"]) - float(day0_rows["r_index"]), 4)),
+                "window": f"[-{pre}, -1] 交易日（strict as-of；截止前一交易日收盘 {prior_close_day}）",
+                "information_cutoff": "previous_trading_close",
+                "information_cutoff_date": prior_close_day,
+                "event_day_change_pct": None,
+                "event_day_idx_change_pct": None,
+                "event_day_ar_pct": None,
                 "pre5_cum_return_pct": _cum_ret(df.loc[max(t0 - 5, i_start):t0 - 1, "r_stock"])
                 if t0 - 1 >= i_start else None,
                 "pre20_cum_return_pct": _cum_ret(df.loc[i_start:t0 - 1, "r_stock"])
                 if t0 - 1 >= i_start else None,
                 "pre5_cum_ar_pct": _cum_ret(df.loc[max(t0 - 5, i_start):t0 - 1, "ar"])
-                if t0 - 1 >= i_start and "ar" in df.columns else None,
+                if t0 - 1 >= i_start else None,
                 # as_of 模式下显式声明无 post-event 数据
                 "postN_as_of_blocked": True,
                 "post1_car_endpoint_pct": None,
                 "post3_car_endpoint_pct": None,
                 "post5_car_endpoint_pct": None,
                 "post5_cum_return_pct": None,
-                "car_final_pct": rows[-1]["car"] if rows else None,  # 仅 [-pre, 0]
-                "note": "【STRICT AS-OF 模式】本事件研究仅返回事件日及以前的数据，绝不包含 T+1 及以后的任何信息。"
-                        "r_stock/r_index/ar/car 单位均为 %。可参考信号：event_day_change_pct（T0 当日涨跌）、"
-                        "pre5/pre20_cum_return_pct（事件前漂移）、pre5_cum_ar_pct（事件前超额），"
-                        "禁止使用/推断任何 post-event 指标。",
+                "car_final_pct": rows[-1]["car"] if rows else None,  # 仅 [-pre, -1]
+                "note": "【STRICT AS-OF 模式】仅返回事件日前一交易日收盘及更早的数据；"
+                        "T0 当日涨跌与所有 T+N 字段均不可见。r_stock/r_index/ar/car 单位均为 %。"
+                        "可参考 pre5/pre20 漂移与 pre5 超额，禁止使用/推断事件日或 post-event 指标。",
             }
         else:
             summary = {
@@ -270,12 +274,18 @@ def event_study(symbol: str, event_date: str, pre: int = 20, post: int = 20,
         }
         table = {
             "kind": "table",
-            "title": f"事件窗口明细（{actual_event_day} 前后 {pre}/{i_end - t0} 日）",
+            "title": (
+                f"事件前可见窗口明细（截止 {df.loc[t0 - 1, 'date']}）"
+                if as_of else f"事件窗口明细（{actual_event_day} 前后 {pre}/{i_end - t0} 日）"
+            ),
             "payload": {
                 "columns": ["t", "date", "close", "r_stock", "r_index", "ar", "car"],
                 "rows": [[r[c] for c in ("t", "date", "close", "r_stock", "r_index", "ar", "car")]
                          for r in rows],
-                "note": "收益单位 %；t=0 为事件日",
+                "note": (
+                    "收益单位 %；严格 as-of 已截断至 t=-1，不包含事件日收盘"
+                    if as_of else "收益单位 %；t=0 为事件日"
+                ),
             },
         }
         return ok(

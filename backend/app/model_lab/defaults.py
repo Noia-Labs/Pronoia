@@ -1,0 +1,6 @@
+"""Defaults for new model connections and requests without an explicit budget."""
+
+DEFAULT_MAX_OUTPUT_TOKENS = 65536
+DEFAULT_STRUCTURED_OUTPUT_TOKENS = 32768
+DEFAULT_PLANNING_OUTPUT_TOKENS = 16384
+DEFAULT_TIMEOUT_SECONDS = 600.0
