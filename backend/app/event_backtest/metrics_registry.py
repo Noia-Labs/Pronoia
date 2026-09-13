@@ -93,9 +93,24 @@ class ComputeContext:
     epsilon: float
     exclude_non_significant: bool
     non_sig_event_ids: set[str]                       # 被显著性过滤掉的 event_id
+    execution_spec: dict[str, Any] = field(default_factory=dict)
+    allowed_event_ids: Optional[set[str]] = None
+    event_order: Optional[list[str]] = None
+    predictions: list[TeamPrediction] = field(default_factory=list)
 
     def label_of(self, lab: EventLabel, h: str) -> Label:
-        return getattr(lab, f"label_{h}", "") or ""
+        direction = str(getattr(lab, f"label_{h}", "") or "").strip().lower()
+        if direction not in {"up", "down", "neutral"}:
+            return ""
+        if h == "consensus66":
+            component_cars = [getattr(lab, f"car_{name}", None) for name in ("t3", "t7", "t15", "t30", "t60")]
+            if not any(isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)) for value in component_cars):
+                return ""
+        else:
+            car = getattr(lab, f"car_{h}", None)
+            if not isinstance(car, (int, float)) or isinstance(car, bool) or not math.isfinite(float(car)):
+                return ""
+        return direction  # type: ignore[return-value]
 
 
 # ======================================================== 注册表 ==============================
@@ -159,6 +174,9 @@ def _build_context(
     epsilon: float,
     exclude_non_significant: bool,
     primary_oracle_horizon: Horizon,
+    execution_spec: Optional[dict[str, Any]],
+    allowed_event_ids: Optional[set[str]],
+    event_order: Optional[list[str]],
 ) -> ComputeContext:
     if primary_oracle_horizon not in ALL_HORIZONS:
         primary_oracle_horizon = "t3"  # type: ignore[assignment]
@@ -166,9 +184,14 @@ def _build_context(
     pred_by_id = {p.event_id: p for p in predictions if p.event_id}
     pairs: list[tuple[TeamPrediction, EventLabel]] = []
     for lab in labels:
+        if allowed_event_ids is not None and lab.event_id not in allowed_event_ids:
+            continue
         p = pred_by_id.get(lab.event_id)
         if p is not None:
             pairs.append((p, lab))
+    if event_order is not None:
+        event_rank = {event_id: index for index, event_id in enumerate(event_order)}
+        pairs.sort(key=lambda pair: (event_rank.get(pair[1].event_id, len(event_rank)), pair[1].event_id))
 
     non_sig_event_ids: set[str] = set()
     if exclude_non_significant:
@@ -183,10 +206,14 @@ def _build_context(
     return ComputeContext(
         pairs=pairs,
         n_total=len(pairs),
+        predictions=[p for p in predictions if allowed_event_ids is None or p.event_id in allowed_event_ids],
         primary_oracle_horizon=primary_oracle_horizon,
         epsilon=float(epsilon),
         exclude_non_significant=exclude_non_significant,
         non_sig_event_ids=non_sig_event_ids,
+        execution_spec=dict(execution_spec or {}),
+        allowed_event_ids=set(allowed_event_ids) if allowed_event_ids is not None else None,
+        event_order=list(event_order) if event_order is not None else None,
     )
 
 
@@ -199,6 +226,9 @@ def compute_all_metrics(
     primary_oracle_horizon: Horizon = "t3",
     enabled_metrics: Optional[Iterable[str]] = None,
     disabled_metrics: Optional[Iterable[str]] = None,
+    execution_spec: Optional[dict[str, Any]] = None,
+    allowed_event_ids: Optional[set[str]] = None,
+    event_order: Optional[list[str]] = None,
 ) -> dict[str, MetricResult]:
     """计算所有（或指定的）已注册指标。
 
@@ -211,6 +241,9 @@ def compute_all_metrics(
         predictions=predictions, labels=labels, epsilon=epsilon,
         exclude_non_significant=exclude_non_significant,
         primary_oracle_horizon=primary_oracle_horizon,
+        execution_spec=execution_spec,
+        allowed_event_ids=allowed_event_ids,
+        event_order=event_order,
     )
 
     # 决定启用哪些 metric_id
@@ -290,6 +323,45 @@ def _evaluate_primary_non_neutral(ctx: ComputeContext, h: str) -> dict:
     return _mk_acc_stat(n_nn, k_nn)
 
 
+def _evaluate_primary_directional_trades(ctx: ComputeContext, h: str) -> dict:
+    """Accuracy conditional on an actual directional decision and label.
+
+    Coverage/abstention is reported separately.  This view answers the trading
+    question "when the model chose long or short, how often was the direction
+    right?" without silently counting a valid neutral/no-trade as a bad trade.
+    """
+    n_directional, k_directional = 0, 0
+    for prediction, label in ctx.pairs:
+        if prediction.abstain:
+            continue
+        oracle_direction = ctx.label_of(label, h)
+        if oracle_direction not in {"up", "down"}:
+            continue
+        if prediction.pred_direction not in {"up", "down"}:
+            continue
+        n_directional += 1
+        if prediction.pred_direction == oracle_direction:
+            k_directional += 1
+    return _mk_acc_stat(n_directional, k_directional)
+
+
+def _evaluate_primary_three_class(ctx: ComputeContext, h: str) -> dict:
+    """Exact-match accuracy for up/down/neutral, excluding invalid abstentions."""
+    n_valid, k_valid = 0, 0
+    for prediction, label in ctx.pairs:
+        if prediction.abstain:
+            continue
+        oracle_direction = ctx.label_of(label, h)
+        if oracle_direction not in {"up", "down", "neutral"}:
+            continue
+        if prediction.pred_direction not in {"up", "down", "neutral"}:
+            continue
+        n_valid += 1
+        if prediction.pred_direction == oracle_direction:
+            k_valid += 1
+    return _mk_acc_stat(n_valid, k_valid)
+
+
 def _evaluate_primary_significant_only(ctx: ComputeContext, h: str) -> dict:
     """只对 primary horizon：pvalue<0.10 且非 abstain 且非 neutral。"""
     n_sig, k_sig = 0, 0
@@ -320,7 +392,7 @@ def _register_acc_strict(h: Horizon, display_name: str, order: int = 100) -> Non
     @register_metric(
         f"acc_{h}_strict",
         display_name=display_name,
-        description=f"{display_name}：abstain/neutral 算错，最严格口径",
+        description=f"{display_name}：剔除 abstain/缺失标签，neutral 留在分母并按错计",
         tier="core",
         higher_is_better=True,
     )
@@ -329,7 +401,7 @@ def _register_acc_strict(h: Horizon, display_name: str, order: int = 100) -> Non
         return MetricResult(
             value=stat["acc"],
             display_name=display_name,
-            description=f"{display_name}：abstain/neutral 算错",
+            description=f"{display_name}：剔除 abstain/缺失标签，neutral 留在分母并按错计",
             tier="core",
             higher_is_better=True,
             breakdown={"wilson": {"lo_95": stat["wilson_lo_95"], "hi_95": stat["wilson_hi_95"]}},
@@ -374,6 +446,48 @@ def calc_acc_primary_non_neutral(ctx: ComputeContext) -> MetricResult:
         higher_is_better=True,
         breakdown={"wilson": {"lo_95": stat["wilson_lo_95"], "hi_95": stat["wilson_hi_95"]}},
         meta={"n": stat["n"], "k": stat["k"], "primary_horizon": h, "mode": "non_neutral"},
+    )
+
+
+@register_metric(
+    "acc_primary_directional_trade",
+    display_name="方向交易准确率",
+    description="Primary horizon：仅统计模型实际给出 up/down 且 Oracle 也为 up/down 的样本",
+    tier="core",
+    higher_is_better=True,
+)
+def calc_acc_primary_directional_trade(ctx: ComputeContext) -> MetricResult:
+    h = ctx.primary_oracle_horizon
+    stat = _evaluate_primary_directional_trades(ctx, h)
+    return MetricResult(
+        value=stat["acc"] if stat["n"] > 0 else None,
+        display_name="方向交易准确率",
+        description=f"Primary({h}) 在实际 up/down 决策上的命中率；中性与弃权不进入分母",
+        tier="core",
+        higher_is_better=True,
+        breakdown={"wilson": {"lo_95": stat["wilson_lo_95"], "hi_95": stat["wilson_hi_95"]}},
+        meta={"n": stat["n"], "k": stat["k"], "primary_horizon": h, "mode": "directional_trade"},
+    )
+
+
+@register_metric(
+    "acc_primary_three_class",
+    display_name="三分类准确率",
+    description="Primary horizon：up/down/neutral 三分类完全一致；输出无效与弃权不计分",
+    tier="core",
+    higher_is_better=True,
+)
+def calc_acc_primary_three_class(ctx: ComputeContext) -> MetricResult:
+    h = ctx.primary_oracle_horizon
+    stat = _evaluate_primary_three_class(ctx, h)
+    return MetricResult(
+        value=stat["acc"] if stat["n"] > 0 else None,
+        display_name="三分类准确率",
+        description=f"Primary({h}) 的 up/down/neutral 完全匹配率；弃权不进入分母",
+        tier="core",
+        higher_is_better=True,
+        breakdown={"wilson": {"lo_95": stat["wilson_lo_95"], "hi_95": stat["wilson_hi_95"]}},
+        meta={"n": stat["n"], "k": stat["k"], "primary_horizon": h, "mode": "three_class"},
     )
 
 
@@ -576,9 +690,9 @@ def calc_avg_car_primary(ctx: ComputeContext) -> MetricResult:
         lab_h = ctx.label_of(lab, h)
         if (lab_h or "").strip() and isinstance(c, (int, float)):
             cars.append(float(c))
-    avg = sum(cars) / len(cars) if cars else 0.0
+    avg = (sum(cars) / len(cars)) if cars else None
     return MetricResult(
-        value=float(f"{avg:.6f}"),
+        value=float(f"{avg:.6f}") if avg is not None else None,
         display_name="主窗口平均 CAR",
         description=f"Primary({h}) 有效标签平均累计异常收益率",
         tier="extended",
@@ -754,4 +868,201 @@ def calc_prior_alignment_rate(ctx: ComputeContext) -> MetricResult:
         tier="extended",
         higher_is_better=True,
         meta={"n": n, "aligned": k},
+    )
+
+
+# --- EXTENDED: event-decision investment performance proxies ---
+
+def _event_trade_proxy_returns(ctx: ComputeContext, *, gross: bool = False) -> list[float]:
+    """Approximate one equal-notional trade per label in label-file order.
+
+    This intentionally is not presented as a portfolio backtest: overlapping
+    positions, capital constraints and fills are not modelled. The run's explicit
+    fee_bps + slippage_bps is interpreted as one all-in round-trip amount and
+    subtracted once per active event. No entry/exit order legs are fabricated.
+    """
+    from .evaluation_protocol import event_proxy_cost_spec
+
+    cost = event_proxy_cost_spec(ctx.execution_spec)["round_trip_cost_rate"]
+    returns: list[float] = []
+    car_key = f"car_{ctx.primary_oracle_horizon}"
+    ordered_pairs = list(ctx.pairs) if ctx.event_order is not None else sorted(
+        ctx.pairs,
+        key=lambda pair: (str(getattr(pair[1], "event_time", "") or ""), pair[1].event_id),
+    )
+    for prediction, label in ordered_pairs:
+        car = getattr(label, car_key, None)
+        if car is None and ctx.primary_oracle_horizon == "t3":
+            car = getattr(label, "car_t3", None)
+        label_value = ctx.label_of(label, ctx.primary_oracle_horizon)
+        if car is None or not isinstance(car, (int, float)) or not math.isfinite(float(car)):
+            continue
+        if label_value not in {"up", "down", "neutral"}:
+            continue
+        direction = str(prediction.pred_direction or "")
+        if prediction.abstain or direction == "neutral":
+            continue
+        elif direction == "up":
+            trade_return = float(car)
+        elif direction == "down":
+            trade_return = -float(car)
+        else:
+            continue
+        if not gross:
+            trade_return -= cost
+        # Keep the proxy equity curve defined for extreme but finite CAR inputs.
+        returns.append(max(-0.999999, trade_return))
+    return returns
+
+
+def _event_trade_proxy_meta(ctx: ComputeContext, count: int) -> dict[str, Any]:
+    from .evaluation_protocol import event_proxy_cost_spec
+
+    costs = event_proxy_cost_spec(ctx.execution_spec)
+    return {
+        "n_event_trades": count,
+        "horizon": ctx.primary_oracle_horizon,
+        "method": "event_trade_proxy",
+        "ordering": "event_time_then_event_id",
+        "positioning": "equal_notional_one_trade_per_event",
+        "fee_bps": costs["fee_bps"],
+        "slippage_bps": costs["slippage_bps"],
+        "round_trip_cost_bps": costs["round_trip_cost_bps"],
+        "total_cost_rate_sum": count * costs["round_trip_cost_rate"],
+        "cost_application": "fee_bps + slippage_bps as one all-in round-trip event-window proxy charge",
+        "date_filter_applied": ctx.allowed_event_ids is not None,
+        "evaluated_event_universe_size": len(ctx.allowed_event_ids) if ctx.allowed_event_ids is not None else None,
+        "disclaimer": "事件逐笔代理指标；成本是每个事件窗口的一次全程往返假设，不是逐订单费用，也不是包含资金占用、重叠持仓与真实成交撮合的完整组合回测。",
+    }
+
+
+@register_metric(
+    "strategy_total_return",
+    display_name="策略累计收益",
+    description="累计收益；具体为事件代理或 bar 组合模拟，以结果 meta.method 为准",
+    tier="extended",
+    higher_is_better=True,
+)
+def calc_strategy_total_return(ctx: ComputeContext) -> MetricResult:
+    returns = _event_trade_proxy_returns(ctx)
+    gross_returns = _event_trade_proxy_returns(ctx, gross=True)
+    if not returns:
+        value = None
+    else:
+        equity = 1.0
+        for item in returns:
+            equity *= 1.0 + item
+        value = equity - 1.0
+    meta = _event_trade_proxy_meta(ctx, len(returns))
+    if gross_returns:
+        gross_equity = 1.0
+        for item in gross_returns:
+            gross_equity *= 1.0 + item
+        meta["gross_total_return"] = gross_equity - 1.0
+    else:
+        meta["gross_total_return"] = None
+    return MetricResult(
+        value=value,
+        display_name="策略累计收益",
+        description="方向调整后的事件 CAR 按标签顺序逐笔复利",
+        tier="extended",
+        higher_is_better=True,
+        meta=meta,
+    )
+
+
+@register_metric(
+    "strategy_max_drawdown",
+    display_name="最大回撤",
+    description="净值曲线峰谷最大跌幅；具体引擎口径见结果 meta.method",
+    tier="extended",
+    higher_is_better=False,
+)
+def calc_strategy_max_drawdown(ctx: ComputeContext) -> MetricResult:
+    returns = _event_trade_proxy_returns(ctx)
+    max_drawdown: float | None = None
+    if returns:
+        equity = peak = 1.0
+        max_drawdown = 0.0
+        for item in returns:
+            equity *= 1.0 + item
+            peak = max(peak, equity)
+            max_drawdown = max(max_drawdown, (peak - equity) / peak if peak else 0.0)
+    return MetricResult(
+        value=max_drawdown,
+        display_name="最大回撤",
+        description="方向调整后的事件 CAR 代理净值最大回撤",
+        tier="extended",
+        higher_is_better=False,
+        meta=_event_trade_proxy_meta(ctx, len(returns)),
+    )
+
+
+@register_metric(
+    "strategy_sharpe_proxy",
+    display_name="Sharpe / 收益信噪比",
+    description="事件代理为非年化逐笔信噪比；portfolio 为 bar 频率年化 Sharpe，见 meta.method",
+    tier="extended",
+    higher_is_better=True,
+)
+def calc_strategy_sharpe_proxy(ctx: ComputeContext) -> MetricResult:
+    returns = _event_trade_proxy_returns(ctx)
+    value: float | None = None
+    if len(returns) >= 2:
+        mean = sum(returns) / len(returns)
+        variance = sum((item - mean) ** 2 for item in returns) / (len(returns) - 1)
+        if variance > 0:
+            value = mean / math.sqrt(variance) * math.sqrt(len(returns))
+    return MetricResult(
+        value=value,
+        display_name="Sharpe / 收益信噪比",
+        description="非年化事件收益信噪比，仅用于相同协议 Run 横向比较",
+        tier="extended",
+        higher_is_better=True,
+        meta=_event_trade_proxy_meta(ctx, len(returns)),
+    )
+
+
+@register_metric(
+    "strategy_win_rate",
+    display_name="正收益观察占比",
+    description="事件代理为正收益事件占比；portfolio 为活跃 bar 正收益占比，不冒充配对交易胜率",
+    tier="extended",
+    higher_is_better=True,
+)
+def calc_strategy_win_rate(ctx: ComputeContext) -> MetricResult:
+    returns = _event_trade_proxy_returns(ctx)
+    active = list(returns)
+    value = (sum(1 for item in active if item > 0) / len(active)) if active else None
+    meta = _event_trade_proxy_meta(ctx, len(returns))
+    meta.update({"n_active": len(active), "n_wins": sum(1 for item in active if item > 0)})
+    return MetricResult(
+        value=value,
+        display_name="正收益观察占比",
+        description="方向调整后的非零事件 CAR 胜率",
+        tier="extended",
+        higher_is_better=True,
+        meta=meta,
+    )
+
+
+@register_metric(
+    "return_forecast",
+    display_name="收益率预测误差",
+    description="未来 T+N 标的自身收益率数值预测；MAE、RMSE 与偏差以百分点计",
+    tier="core",
+    higher_is_better=False,
+)
+def calc_return_forecast(ctx: ComputeContext) -> MetricResult:
+    from .return_forecast import compute_return_forecast
+
+    summary = compute_return_forecast(
+        ctx.predictions or [prediction for prediction, _ in ctx.pairs],
+        [label for _, label in ctx.pairs],
+        horizon=ctx.primary_oracle_horizon,
+    )
+    return MetricResult(
+        value=summary["mae_pct"], display_name="收益率预测误差",
+        description="预测减实际收益率；缺少显式数值预测的历史记录不计为零预测",
+        tier="core", higher_is_better=False, meta=summary,
     )

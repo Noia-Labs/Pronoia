@@ -6,6 +6,7 @@ import {
   DataZoomComponent,
   GridComponent,
   MarkLineComponent,
+  MarkPointComponent,
   TooltipComponent,
 } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
@@ -19,6 +20,7 @@ echarts.use([
   AxisPointerComponent,
   DataZoomComponent,
   MarkLineComponent,
+  MarkPointComponent,
   CanvasRenderer,
 ]);
 
@@ -28,8 +30,15 @@ const INK = "#1C1B1A";
 const MUTE = "#6B6862";
 const EDGE = "#E8E5E0";
 
-/** K线图：蜡烛图 + 成交量副图 + 事件日 markLine（design.md §9 kline） */
-export default function KlineChart({ payload, height = 430 }: { payload: KlinePayload; height?: number }) {
+export interface KlineTradeMarker {
+  date: string;
+  side: "buy" | "sell" | string;
+  price?: number | null;
+  label?: string;
+}
+
+/** K线图：真实蜡烛图 + 成交量 + 可选事件日与模拟成交标记。 */
+export default function KlineChart({ payload, height = 430, tradeMarkers = [] }: { payload: KlinePayload; height?: number; tradeMarkers?: KlineTradeMarker[] }) {
   const ref = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
 
@@ -39,7 +48,40 @@ export default function KlineChart({ payload, height = 430 }: { payload: KlinePa
     chartRef.current = chart;
 
     const { dates = [], ohlc = [], volumes = [], event_date, symbol } = payload;
+    const hasVolume = volumes.length === dates.length && volumes.every((value) => Number.isFinite(value));
     const upDown = ohlc.map((d) => (d[1] >= d[0] ? 1 : -1));
+    const exactDateIndex = new Map<string, number>();
+    const firstBarByDay = new Map<string, number>();
+    dates.forEach((date, index) => {
+      exactDateIndex.set(date, index);
+      const day = date.slice(0, 10);
+      if (!firstBarByDay.has(day)) firstBarByDay.set(day, index);
+    });
+    const intradaySeries = dates.some((date) => /(?:T|\s)\d{1,2}:\d{2}/.test(date));
+    const markPoints = tradeMarkers.flatMap((marker) => {
+      const normalizedDate = marker.date.slice(0, 10);
+      const normalizedTimestamp = marker.date.includes(" ") ? marker.date.replace(" ", "T") : marker.date;
+      const intradayMarker = /(?:T|\s)\d{1,2}:\d{2}/.test(marker.date);
+      // Minute bars must match the exact execution timestamp.  Falling back to
+      // the first bar of a day is reserved for daily bars / date-only markers.
+      const index = exactDateIndex.get(marker.date)
+        ?? exactDateIndex.get(normalizedTimestamp)
+        ?? ((!intradaySeries || !intradayMarker) ? firstBarByDay.get(normalizedDate) : undefined)
+        ?? -1;
+      if (index < 0 || !ohlc[index]) return [];
+      const isBuy = /buy|long|open|买|多/i.test(marker.side);
+      const placement = marker.price ?? (isBuy ? ohlc[index][2] : ohlc[index][3]);
+      return [{
+        name: marker.label ?? (isBuy ? "买入" : "卖出"),
+        coord: [dates[index], placement],
+        value: marker.price ?? "",
+        symbol: isBuy ? "arrow" : "pin",
+        symbolRotate: isBuy ? 0 : 0,
+        symbolSize: isBuy ? 20 : 24,
+        itemStyle: { color: isBuy ? "#0F766E" : "#B45309", borderColor: "#FFFFFF", borderWidth: 1 },
+        label: { show: true, formatter: isBuy ? "B" : "S", color: "#FFFFFF", fontSize: 8, fontWeight: 700 },
+      }];
+    });
 
     const markLine =
       event_date && dates.includes(event_date)
@@ -85,14 +127,14 @@ export default function KlineChart({ payload, height = 430 }: { payload: KlinePa
             ${row("高", d[3].toFixed(2))}
             ${row("低", d[2].toFixed(2))}
             ${row("涨跌幅", `<span style="color:${chg >= 0 ? RISE : FALL}">${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%</span>`)}
-            ${row("成交量", `${(volumes[i] / 10000).toFixed(1)}万手`)}
+            ${hasVolume ? row("成交量", `${(volumes[i] / 10000).toFixed(1)}万手`) : ""}
           </div>`;
         },
       },
-      grid: [
+      grid: hasVolume ? [
         { left: 56, right: 18, top: 30, height: "58%" },
         { left: 56, right: 18, top: "74%", height: "16%" },
-      ],
+      ] : [{ left: 56, right: 18, top: 30, bottom: 52 }],
       xAxis: [
         {
           type: "category",
@@ -101,10 +143,10 @@ export default function KlineChart({ payload, height = 430 }: { payload: KlinePa
           boundaryGap: true,
           axisLine: { lineStyle: { color: EDGE } },
           axisTick: { show: false },
-          axisLabel: { show: false },
+          axisLabel: hasVolume ? { show: false } : { color: MUTE, fontSize: 10, interval: Math.max(1, Math.floor(dates.length / 4)) },
           splitLine: { show: false },
         },
-        {
+        ...(hasVolume ? [{
           type: "category",
           data: dates,
           gridIndex: 1,
@@ -113,10 +155,10 @@ export default function KlineChart({ payload, height = 430 }: { payload: KlinePa
           axisTick: { show: false },
           axisLabel: { color: MUTE, fontSize: 10, interval: Math.max(1, Math.floor(dates.length / 4)) },
           splitLine: { show: false },
-        },
+        }] : []),
       ],
       yAxis: [
-        {
+        ...(hasVolume ? [{
           scale: true,
           gridIndex: 0,
           position: "left",
@@ -137,13 +179,13 @@ export default function KlineChart({ payload, height = 430 }: { payload: KlinePa
             formatter: (v: number) => (v >= 1e8 ? (v / 1e8).toFixed(1) + "亿" : (v / 1e4).toFixed(0) + "万"),
           },
           splitLine: { show: false },
-        },
+        }] : []),
       ],
       dataZoom: [
-        { type: "inside", xAxisIndex: [0, 1], start: Math.max(0, 100 - (120 / Math.max(dates.length, 1)) * 100), end: 100 },
+        { type: "inside", xAxisIndex: hasVolume ? [0, 1] : [0], start: Math.max(0, 100 - (120 / Math.max(dates.length, 1)) * 100), end: 100 },
         {
           type: "slider",
-          xAxisIndex: [0, 1],
+          xAxisIndex: hasVolume ? [0, 1] : [0],
           bottom: 6,
           height: 16,
           borderColor: EDGE,
@@ -172,8 +214,19 @@ export default function KlineChart({ payload, height = 430 }: { payload: KlinePa
             borderColor0: FALL,
           },
           markLine,
+          markPoint: markPoints.length ? {
+            animation: false,
+            data: markPoints,
+            tooltip: {
+              formatter: (params: unknown) => {
+                const point = params as { name?: string; value?: unknown; data?: { coord?: unknown[] } };
+                const date = String(point.data?.coord?.[0] ?? "");
+                return `${point.name ?? "成交"}<br/>${date}${point.value !== "" && point.value != null ? `<br/>成交价 ${point.value}` : "<br/>成交价未返回"}`;
+              },
+            },
+          } : undefined,
         },
-        {
+        ...(hasVolume ? [{
           name: "成交量",
           type: "bar",
           data: volumes.map((v, i) => ({
@@ -183,7 +236,7 @@ export default function KlineChart({ payload, height = 430 }: { payload: KlinePa
           xAxisIndex: 1,
           yAxisIndex: 1,
           barMaxWidth: 8,
-        },
+        }] : []),
       ],
     });
 
@@ -194,7 +247,7 @@ export default function KlineChart({ payload, height = 430 }: { payload: KlinePa
       chart.dispose();
       chartRef.current = null;
     };
-  }, [payload]);
+  }, [payload, tradeMarkers]);
 
   return <div ref={ref} style={{ height }} className="w-full" />;
 }

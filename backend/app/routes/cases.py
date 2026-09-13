@@ -77,7 +77,7 @@ async def generate_report(case_id: str):
         f"【对话摘要】\n" + ("\n\n".join(dialog_digest) if dialog_digest else "（无对话）")
     )
     try:
-        markdown = await complete_text(system_prompt("report_writer"), prompt, max_tokens=8000)
+        markdown = await complete_text(system_prompt("report_writer"), prompt)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"报告生成失败: {type(e).__name__}: {e}")
     if not markdown:

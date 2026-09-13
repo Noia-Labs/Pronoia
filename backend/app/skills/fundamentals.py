@@ -16,6 +16,7 @@ from typing import Optional
 import akshare as ak
 import pandas as pd
 
+from ..market_runtime import call_sina_history
 from .market import is_us_symbol, norm_date, norm_us_symbol
 from .registry import err, json_safe, meta, ok, skill
 
@@ -41,7 +42,7 @@ def _table_artifact(title: str, records: list[dict], note: str | None = None) ->
 def _fetch_us_kline_df(sym: str) -> pd.DataFrame:
     """取美股最近 250 行日K（已排序/清洗）。失败抛 ValueError。"""
     from .market import _clean_ohlcv
-    df = ak.stock_us_daily(symbol=sym, adjust="qfq")
+    df = call_sina_history(ak.stock_us_daily, symbol=sym, adjust="qfq")
     if df is None or len(df) == 0:
         raise ValueError(f"美股 {sym} 无日K数据")
     df, _ = _clean_ohlcv(df, limit=250)

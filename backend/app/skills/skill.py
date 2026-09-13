@@ -27,7 +27,7 @@ import re
 from typing import Any
 
 from ..llm import execute_skill
-from .market import is_a_share_index_symbol, is_us_symbol
+from .market import is_a_share_index_symbol, is_us_symbol, norm_symbol
 from .price_data import resolve_security_ref
 from .registry import err, meta, ok, skill
 
@@ -650,8 +650,7 @@ async def macro_intel(topic: str | None = None) -> dict:
     "事件研究：基于 event_study 子能力，分析单次事件前后的异常收益（CAR）。"
     "event_date YYYY-MM-DD，symbol 支持 6 位 A 股代码或美股 ticker（AAPL/NVDA/TSLA）。"
     "如果传 keyword 而无 symbol，先用 search_stock 解析（自动识别美股/ A 股）。"
-    "window_days 默认 30；回测/严格 as-of 场景请传 as_of=True，并传 prediction_cutoff_at，"
-    "此时仅返回截止时点已经完整收盘的数据（禁止未来函数）。",
+    "window_days 默认 30；回测/严格 as-of 场景请传 as_of=True，此时仅返回事件日前一交易日收盘及更早数据（禁止未来函数）。",
     {
         "type": "object",
         "properties": {
@@ -662,10 +661,10 @@ async def macro_intel(topic: str | None = None) -> dict:
             "window_days": {"type": "integer", "description": "事件窗口，默认 30"},
             "benchmark": {"type": "string",
                           "description": "基准指数/ETF：A 股传 sh000300 等；美股传 SPY/QQQ/XLK 等（优先使用调用方指定）"},
+            "market": {"type": "string",
+                       "description": "事件声明市场；严格回放时由执行边界冻结"},
             "as_of": {"type": "boolean",
-                      "description": "严格 as-of 回测模式：True=只返回预测截止时已完整收盘的数据"},
-            "prediction_cutoff_at": {"type": "string",
-                      "description": "预测截止时间（ISO 8601，含时区）；开盘前预测会自动排除 T0 收盘数据"},
+                      "description": "严格 as-of 回测模式：True=只返回事件日前一交易日收盘及更早数据（不返回 T0 或 post-event 信息）"},
         },
         "required": ["event_date"],
         "anyOf": [
@@ -682,9 +681,14 @@ async def event_study_skill(event_date: str, symbol: str | None = None,
                             window_days: int = 30,
                             benchmark: str | None = None,
                             as_of: bool = False,
-                            prediction_cutoff_at: str = "") -> dict:
+                            market: str | None = None) -> dict:
     sym_raw = (symbol or "").strip()
-    us = bool(sym_raw) and is_us_symbol(sym_raw)
+    declared_market = str(market or "").strip().upper()
+    if declared_market and declared_market not in {"CN", "US"}:
+        return err(f"event_study_skill 暂不支持 {declared_market} 市场")
+    us = declared_market == "US" or (
+        not declared_market and bool(sym_raw) and is_us_symbol(sym_raw)
+    )
     if us:
         # 美股：保留原始 ticker（去空白 / 大写），如 AAPL / BRK.B
         sym = sym_raw.upper()
@@ -692,20 +696,11 @@ async def event_study_skill(event_date: str, symbol: str | None = None,
         # A 股指数：保留 sh000300 / sz399001 形式，不能截成 6 位股票代码
         sym = sym_raw.lower()
     elif sym_raw:
-        # A 股：保留显式交易所前缀；若只有 6 位代码，则在这里补正确前缀。
-        # 不能先剥 SH/SZ 再交给下游，否则 51/56/58 开头的沪市 ETF 会被误判为深市。
-        code6 = "".join(ch for ch in sym_raw if ch.isdigit())[-6:]
-        if len(code6) == 6:
-            lowered = sym_raw.lower()
-            if lowered.startswith(("sh", "sz", "bj")):
-                sym = lowered[:2] + code6
-            elif code6.startswith(("50", "51", "52", "56", "58")):
-                sym = "sh" + code6
-            elif code6.startswith("15"):
-                sym = "sz" + code6
-            else:
-                sym = code6
-        else:
+        # Preserve explicit exchange aliases while resolving bare A-share,
+        # ETF, index, and Beijing codes through the shared normalizer.
+        try:
+            sym = norm_symbol(sym_raw)
+        except ValueError:
             sym = ""
     else:
         sym = ""
@@ -721,17 +716,10 @@ async def event_study_skill(event_date: str, symbol: str | None = None,
             elif is_a_share_index_symbol(cand):
                 sym = cand.lower()
             else:
-                code6 = "".join(ch for ch in cand if ch.isdigit())[-6:]
-                if len(code6) == 6:
-                    lowered = cand.lower()
-                    if lowered.startswith(("sh", "sz", "bj")):
-                        sym = lowered[:2] + code6
-                    elif code6.startswith(("50", "51", "52", "56", "58")):
-                        sym = "sh" + code6
-                    elif code6.startswith("15"):
-                        sym = "sz" + code6
-                    else:
-                        sym = code6
+                try:
+                    sym = norm_symbol(cand)
+                except ValueError:
+                    sym = ""
     if not sym:
         return err("必须提供 symbol 或 keyword")
 
@@ -759,29 +747,19 @@ async def event_study_skill(event_date: str, symbol: str | None = None,
 
     # event_study 子能力用 pre/post 表达事件窗口；window_days 转为单边窗口长度
     pre = max(1, min(int(window_days or 30), 60))
-    # as_of=True 时 post 强制 0；prediction_cutoff_at 在 T0 收盘前时底层进一步截断到 T-1。
+    # as_of=True 时 post 强制 0（event_study 内兜底再次强制，双重保险）
     post = 0 if as_of else pre
     call_args = {
         "event_date": event_date, "symbol": sym,
         "pre": pre, "post": post,
         "index_symbol": idx_sym,
         "as_of": bool(as_of),
-        "prediction_cutoff_at": prediction_cutoff_at,
     }
     result = await execute_skill("event_study", call_args)
     if not result.get("ok"):
         return result
     es_data = result.get("data") or {}
     es_summary = es_data.get("summary") or {}
-    es_meta = result.get("meta") or {}
-    price_sources = {
-        "asset_provider": es_meta.get("asset_provider"),
-        "benchmark_provider": es_meta.get("benchmark_provider"),
-        "asset_attempts": es_meta.get("asset_attempts") or [],
-        "benchmark_attempts": es_meta.get("benchmark_attempts") or [],
-        "requested_start_date": es_meta.get("requested_start_date"),
-        "requested_end_date": es_meta.get("requested_end_date"),
-    }
 
     # ===== P0：严格 as_of 回测模式下，移除所有泄露未来信息的字段 =====
     if as_of:
@@ -791,9 +769,8 @@ async def event_study_skill(event_date: str, symbol: str | None = None,
              "event_date": event_date, "window_days": window_days,
              "benchmark": idx_sym,
              "as_of_mode": True,
-             "prediction_cutoff_at": prediction_cutoff_at or None,
-             "data_cutoff_date": es_summary.get("data_cutoff_date"),
-             "event_day_data_included": es_summary.get("event_day_data_included"),
+             "information_cutoff": es_summary.get("information_cutoff") or "previous_trading_close",
+             "information_cutoff_date": es_summary.get("information_cutoff_date"),
              "signal_event_day_change_pct": es_summary.get("event_day_change_pct"),
              "signal_event_day_idx_change_pct": es_summary.get("event_day_idx_change_pct"),
              "signal_event_day_ar_pct": es_summary.get("event_day_ar_pct"),
@@ -804,7 +781,6 @@ async def event_study_skill(event_date: str, symbol: str | None = None,
              "benchmark_relative_car_t3_pct": None,
              "direction_hint": None,
              "postN_blocked": True,
-             "price_sources": price_sources,
              "event_study": es_data},
             meta("event_study_skill", 1),
             artifact=result.get("artifact"),
@@ -818,7 +794,6 @@ async def event_study_skill(event_date: str, symbol: str | None = None,
              "event_date": event_date, "window_days": window_days,
              "benchmark": idx_sym,
              "as_of_mode": False,
-             "price_sources": price_sources,
              "benchmark_relative_car_t3_pct": car_t3,
              "direction_hint": ("up" if car_t3 is not None and car_t3 > 0.5
                                 else "down" if car_t3 is not None and car_t3 < -0.5

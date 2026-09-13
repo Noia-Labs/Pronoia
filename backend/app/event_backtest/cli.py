@@ -111,7 +111,7 @@ def build_bt_parser() -> argparse.ArgumentParser:
     label = sub.add_parser("label", aliases=["lb"], help="用 yfinance 历史行情生成 T+1/T+3/T+5 真实标签（CAR=asset_ret - benchmark_ret）")
     label.add_argument("--events", required=True, help="events.jsonl（phase1 / seeds 均可）")
     label.add_argument("--out", required=True, help="labels.jsonl（每行含 car_t1/car_t3/car_t5 + label_t1~5）")
-    label.add_argument("--epsilon", type=float, default=0.005, help="CAR 中性阈值（正负 epsilon 判 neutral，默认 0.5%%）")
+    label.add_argument("--epsilon", type=float, default=0.0, help="方向阈值，默认0：正值看涨、负值看跌，恰好为0不计方向；显式正阈值保留旧中性带")
     label.add_argument("--data-source", choices=["auto", "akshare_only", "yfinance_only", "hybrid"], default="auto", help="数据源：默认 auto=akshare 三只脚 stock_us_daily / CN-asset Sina-TX / CN-index sh000300；缺数据 hybrid 兜底 yfinance；akshare_only 强制只用 akshare；yfinance_only 强制只用 yfinance")
     label.set_defaults(func=cmd_label)
 

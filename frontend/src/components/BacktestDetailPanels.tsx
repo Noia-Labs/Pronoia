@@ -13,15 +13,17 @@ import {
 import type {
   BTEventCatalogItem,
   BTEventStatus,
+  BTPerformanceKline,
   BTPredictionDetail,
   BTPredictionItem,
   BTTrajectoryCkpt,
-  KlinePayload,
 } from "../types";
 import { cls, clsx } from "../utils";
 import { api } from "../api";
 import KlineChart from "./KlineChart";
+import { CloseOnlyChart } from "./BacktestPerformanceDashboard";
 import { DirBadge, isFeverSyntheticSourceUrl, PreTextBlock } from "./BacktestDetailShared";
+import { predictionFailureInfo, predictionOutcome } from "./BacktestDetailWidgets";
 
 /* ===================================== 单 case 详情展开面板 ===================================== */
 
@@ -35,6 +37,7 @@ export function CaseDetailPanel({
   itemStatus,
   catalogItem,
   runId,
+  allowSensitive = true,
 }: {
   loading: boolean;
   detail: BTPredictionDetail | null;
@@ -43,6 +46,8 @@ export function CaseDetailPanel({
   itemStatus: BTEventStatus;
   catalogItem: BTEventCatalogItem;
   runId: string;
+  /** arena-safe Run 不应把完整 Prompt、数据包和 Agent 轨迹暴露给共享视图。 */
+  allowSensitive?: boolean;
 }) {
   const traj: BTTrajectoryCkpt | null = detail?.trajectory ?? null;
   const stats = traj?.llm_trajectory_stats ?? null;
@@ -64,11 +69,19 @@ export function CaseDetailPanel({
   const symbolStr = (em.symbol as string | undefined) ?? catalogItem.symbol ?? null;
   const marketStr = (em.market as string | undefined) ?? catalogItem.market ?? null;
   const typeStr = (em.event_type_l2 as string | undefined) ?? catalogItem.event_type_l2 ?? null;
-  const timeStr = (em.event_time as string | undefined) ?? catalogItem.event_time ?? null;
+  const occurredAtStr =
+    (em.occurred_at as string | undefined) ?? catalogItem.occurred_at ?? null;
+  const availableTimeStr =
+    (em.available_time as string | undefined) ??
+    catalogItem.available_time ??
+    (em.event_time as string | undefined) ??
+    catalogItem.event_time ??
+    null;
 
   // ---------------- 完整事件说明 Modal（解决：占位 source_url 点出去 404 的问题） ----------------
   const [fullEventOpen, setFullEventOpen] = useState(false);
   const synthetic = sourceUrlStr ? isFeverSyntheticSourceUrl(sourceUrlStr) : false;
+  const manualSource = Boolean(sourceUrlStr?.toLowerCase().startsWith("manual://"));
   useEffect(() => {
     if (!fullEventOpen) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setFullEventOpen(false); };
@@ -92,15 +105,19 @@ export function CaseDetailPanel({
   if (traj?.as_of_packet) {
     try { packetJson = JSON.parse(traj.as_of_packet) as Record<string, unknown>; } catch { packetJson = null; }
   }
-  const tabs: Array<{ id: DetailTab; label: string; disabled?: boolean }> = [
-    { id: "log",       label: "完整 Team Log", disabled: itemStatus !== "done" },
+  const allTabs: Array<{ id: DetailTab; label: string; disabled?: boolean; sensitive?: boolean }> = [
+    { id: "log",       label: "完整 Team Log", disabled: !traj?.team_final_state?.content_full, sensitive: true },
     { id: "rationale", label: "决策·结论与理由" },
-    { id: "logic",     label: "逻辑链·Agent 协作", disabled: !traj?.team_final_state },
+    { id: "logic",     label: "逻辑链·Agent 协作", disabled: !traj?.team_final_state, sensitive: true },
     { id: "market",    label: "标的视图·行情 & 预测" },
-    { id: "packet",    label: "As-of Packet", disabled: !traj?.as_of_packet },
-    { id: "prompt",    label: "给 Team 的 Prompt", disabled: !traj?.question_to_team },
+    { id: "packet",    label: "As-of Packet", disabled: !traj?.as_of_packet, sensitive: true },
+    { id: "prompt",    label: "给 Team 的 Prompt", disabled: !traj?.question_to_team, sensitive: true },
   ];
+  const tabs = allTabs.filter((tab) => allowSensitive || !tab.sensitive);
+  const visibleTab: DetailTab = tabs.some((tab) => tab.id === activeTab && !tab.disabled) ? activeTab : "rationale";
   const pred = detail?.prediction;
+  const outputFailure = predictionFailureInfo(pred);
+  const outputOutcome = predictionOutcome(pred);
   return (
     <div className="px-5 py-4">
       {/* ================================================= 事件信息 · Event Info 区块（始终展示） */}
@@ -119,9 +136,14 @@ export function CaseDetailPanel({
             {typeStr && (
               <span className="rounded bg-violet-soft/40 px-1.5 py-0.5 text-[10.5px] text-violet">{typeStr}</span>
             )}
-            {timeStr && (
+            {occurredAtStr && occurredAtStr !== availableTimeStr && (
               <span className="inline-flex items-center gap-1 text-mute">
-                <Timer size={11} /> as-of {timeStr.slice(0, 19).replace("T", " ")}
+                <Timer size={11} /> 发生 {occurredAtStr.slice(0, 19).replace("T", " ")}
+              </span>
+            )}
+            {availableTimeStr && (
+              <span className="inline-flex items-center gap-1 text-mute">
+                <Timer size={11} /> 可得 {availableTimeStr.slice(0, 19).replace("T", " ")}
               </span>
             )}
           </div>
@@ -145,7 +167,14 @@ export function CaseDetailPanel({
           </div>
         )}
         <div className="flex flex-wrap items-center gap-3 pt-1">
-          {sourceUrlStr ? (
+          {sourceUrlStr && manualSource ? (
+            <span
+              className="inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11.5px] text-amber-800"
+              title="该事件由用户手工录入，未提供可追溯的外部原文链接"
+            >
+              <FileText size={11} /> 手工录入（无外链）
+            </span>
+          ) : sourceUrlStr ? (
             <a
               href={sourceUrlStr}
               target={synthetic ? undefined : "_blank"}
@@ -155,7 +184,7 @@ export function CaseDetailPanel({
                 "inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-[11.5px] hover:bg-edge/40",
                 synthetic ? "border-violet/30 bg-violet-soft/20 text-violet" : "border-edge bg-card text-brand"
               )}
-              title={synthetic ? `（FEVER 合成数据，点击查看完整原文）${sourceUrlStr}` : sourceUrlStr}
+              title={synthetic ? `（Pronoia 合成数据，点击查看完整原文）${sourceUrlStr}` : sourceUrlStr}
             >
               <ChevronRight size={11} />
               原文链接
@@ -163,7 +192,7 @@ export function CaseDetailPanel({
                 {sourceUrlStr.replace(/^https?:\/\//, "")}
               </span>
               {synthetic && (
-                <span className="ml-0.5 rounded bg-violet/15 px-1 text-[9.5px] text-violet">FEVER 合成</span>
+                <span className="ml-0.5 rounded bg-violet/15 px-1 text-[9.5px] text-violet">Pronoia 合成</span>
               )}
             </a>
           ) : null}
@@ -207,9 +236,14 @@ export function CaseDetailPanel({
                   {typeStr && (
                     <span className="rounded bg-violet-soft/40 px-1.5 py-0.5 text-[10.5px] text-violet">{typeStr}</span>
                   )}
-                  {timeStr && (
+                  {occurredAtStr && occurredAtStr !== availableTimeStr && (
                     <span className="inline-flex items-center gap-1 text-mute">
-                      <Timer size={10.5} /> as-of {timeStr.slice(0, 19).replace("T", " ")}
+                      <Timer size={10.5} /> 发生 {occurredAtStr.slice(0, 19).replace("T", " ")}
+                    </span>
+                  )}
+                  {availableTimeStr && (
+                    <span className="inline-flex items-center gap-1 text-mute">
+                      <Timer size={10.5} /> 可得 {availableTimeStr.slice(0, 19).replace("T", " ")}
                     </span>
                   )}
                   <span className="ml-1 font-mono text-[10px] text-faint">eid {catalogItem.event_id}</span>
@@ -245,7 +279,12 @@ export function CaseDetailPanel({
               {sourceUrlStr && (
                 <div className="flex flex-wrap items-center gap-2 rounded-md border border-edge/60 bg-edge/20 px-3 py-2 text-[11.5px]">
                   <span className="text-mute">来源 URL：</span>
-                  {synthetic ? (
+                  {manualSource ? (
+                    <>
+                      <span className="rounded bg-amber-100 px-1 text-[10px] text-amber-800">手工录入</span>
+                      <span className="text-mute">未提供可追溯的外部原文链接</span>
+                    </>
+                  ) : synthetic ? (
                     <>
                       <span className="rounded bg-violet/15 px-1 text-[10px] text-violet">Pronoia 合成事件</span>
                       <span className="font-mono break-all text-faint">{sourceUrlStr}</span>
@@ -330,7 +369,7 @@ export function CaseDetailPanel({
           </span>
         )}
         {!loading && !traj && itemStatus === "done" && (
-          <span className="text-faint">此 runner 未产生 trajectory（baseline / team_prompt 只有结论理由）</span>
+          <span className="text-faint">本事件没有保存可读取的 trajectory；仍可查看已保存的决策与校验结果。</span>
         )}
       </div>
 
@@ -343,7 +382,7 @@ export function CaseDetailPanel({
             disabled={t.disabled}
             className={cls(
               "-mb-px rounded-t px-3 py-1.5 text-[11.5px] transition",
-              activeTab === t.id
+              visibleTab === t.id
                 ? "border border-b-0 border-edge bg-card text-ink"
                 : t.disabled
                 ? "text-faint cursor-not-allowed opacity-60"
@@ -357,34 +396,65 @@ export function CaseDetailPanel({
 
       {/* Tab 内容 */}
       <div className="max-h-[62vh] overflow-auto rounded-lg border border-edge bg-paper p-4">
-        {activeTab === "log" && (
+        {!allowSensitive && (
+          <div className="mb-3 rounded-md border border-jade/25 bg-jade-soft/35 px-3 py-2 text-[11.5px] leading-relaxed text-jade">
+            此 Run 使用 Arena-safe 可见性。完整 Prompt、As-of 数据包与 Agent 执行轨迹已隐藏，只展示可公开的决策摘要和市场结果。
+          </div>
+        )}
+        {visibleTab === "log" && (
           <PreTextBlock
             empty={!traj?.team_final_state?.content_full}
             emptyHint={detail?.prediction.rationale ?? "（runner 未生成 Team Log，查看「决策·结论与理由」。）"}
             text={traj?.team_final_state?.content_full ?? ""}
           />
         )}
-        {activeTab === "rationale" && (
+        {visibleTab === "rationale" && (
           <div className="space-y-3 text-[12.5px] leading-relaxed text-ink">
             <div>
               <div className="mb-1 text-[10.5px] uppercase tracking-wider text-faint">Final Prediction</div>
               <div className="flex flex-wrap items-center gap-2">
-                <DirBadge d={traj?.structured_extract?.direction ?? pred?.pred_direction} />
-                <span className="font-mono">
-                  confidence {((traj?.structured_extract?.confidence ?? pred?.confidence ?? 0) * 100).toFixed(0)}%
+                {outputOutcome === "invalid_output" ? (
+                  <span className="rounded bg-rise/10 px-1.5 py-0.5 text-[10.5px] font-medium text-rise">无有效预测</span>
+                ) : outputOutcome === "insufficient_data" ? (
+                  <span className="rounded bg-amber-soft px-1.5 py-0.5 text-[10.5px] font-medium text-amber">数据不足</span>
+                ) : outputOutcome === "voluntary_abstain" ? (
+                  <span className="rounded bg-violet-soft px-1.5 py-0.5 text-[10.5px] font-medium text-violet">主动弃权</span>
+                ) : (
+                  <DirBadge d={traj?.structured_extract?.direction ?? pred?.pred_direction} />
+                )}
+                <span className="font-mono text-mute">
+                  {outputOutcome === "invalid_output" || outputOutcome === "insufficient_data" || outputOutcome === "voluntary_abstain"
+                    ? "confidence 不计分"
+                    : `confidence ${((traj?.structured_extract?.confidence ?? pred?.confidence ?? 0) * 100).toFixed(0)}%`}
                 </span>
                 {traj?.structured_extract?.conf_gate_applied ? (
                   <span className="rounded bg-brand-soft/50 px-1.5 py-0.5 text-[10.5px] text-brand">conf 闸 已生效</span>
                 ) : null}
-                {pred?.abstain ? (
-                  <span className="rounded bg-violet-soft px-1.5 py-0.5 text-[10.5px] text-violet">abstain（5xx/超时 fallback neutral）</span>
+                {outputOutcome === "invalid_output" ? (
+                  <span className="rounded bg-rise/10 px-1.5 py-0.5 text-[10.5px] text-rise">模型输出无效 · 未计分</span>
+                ) : outputOutcome === "insufficient_data" ? (
+                  <span className="rounded bg-amber-soft px-1.5 py-0.5 text-[10.5px] text-amber">未形成方向判断 · 不计准确率</span>
+                ) : outputOutcome === "voluntary_abstain" ? (
+                  <span className="rounded bg-violet-soft px-1.5 py-0.5 text-[10.5px] text-violet">模型主动弃权 · 未计分</span>
                 ) : null}
               </div>
             </div>
+            {outputFailure && (
+              <div className="rounded-md border border-rise/20 bg-rise/5 px-3 py-2.5 text-[11.5px] text-rise">
+                <div className="font-semibold">{outputFailure.label}</div>
+                <div className="mt-1 leading-relaxed text-rise/80">{outputFailure.detail}</div>
+              </div>
+            )}
+            {outputOutcome === "insufficient_data" && (
+              <div className="rounded-md border border-amber/25 bg-amber-soft/30 px-3 py-2.5 text-[11.5px] text-amber">
+                <div className="font-semibold">数据不足：缺少判断所需资料</div>
+                <div className="mt-1 whitespace-pre-wrap leading-relaxed">{pred?.rationale || "模型未说明具体缺少的资料，请查看执行日志。"}</div>
+              </div>
+            )}
             <div>
               <div className="mb-1 text-[10.5px] uppercase tracking-wider text-faint">Rationale（DB prediction）</div>
               <div className="whitespace-pre-wrap break-words rounded-md bg-edge/30 p-3 text-[12.5px] text-ink">
-                {pred?.rationale ?? itemStatus === "processing" ? "等待执行完成..." : "（无）"}
+                {pred?.rationale ?? (itemStatus === "processing" ? "等待执行完成..." : "（无）")}
               </div>
             </div>
             {traj?.structured_extract?.rationale &&
@@ -398,10 +468,10 @@ export function CaseDetailPanel({
             ) : null}
           </div>
         )}
-        {activeTab === "logic" && (
+        {visibleTab === "logic" && (
           <LogicChainPanel traj={traj} />
         )}
-        {activeTab === "market" && (
+        {visibleTab === "market" && (
           <MarketViewPanel
             traj={traj}
             packet={packetJson}
@@ -411,7 +481,7 @@ export function CaseDetailPanel({
             eventId={catalogItem.event_id}
           />
         )}
-        {activeTab === "packet" && (
+        {visibleTab === "packet" && (
           <PreTextBlock
             empty={!traj?.as_of_packet}
             emptyHint="（runner 未保存 as_of_packet）"
@@ -419,7 +489,7 @@ export function CaseDetailPanel({
             code
           />
         )}
-        {activeTab === "prompt" && (
+        {visibleTab === "prompt" && (
           <PreTextBlock
             empty={!traj?.question_to_team}
             emptyHint="（runner 未保存 question_to_team）"
@@ -586,6 +656,7 @@ function MarketViewPanel({
   const market = (g(["market"]) as string | undefined) ?? pred?.market ?? "—";
   const eventTime = (g(["event_time", "as_of", "eventTime"]) as string | undefined) ?? "";
   const sourceUrl = (g(["source_url", "sourceUrl", "url"]) as string | undefined) ?? "";
+  const sourceIsExternal = /^https?:\/\//i.test(sourceUrl);
   const t0Ar = g(["t0_ar", "t0AR", "t0_excess_return"]);
   const t0Car = g(["t0_car", "t0CAR", "t0_car_vs_benchmark"]);
   const pre5 = g(["pre5_ar", "pre5drift", "pre_5d_ar", "drift_pre_5"]);
@@ -598,9 +669,11 @@ function MarketViewPanel({
   const predDir = traj?.structured_extract?.direction ?? pred?.pred_direction ?? "";
   const predConf = traj?.structured_extract?.confidence ?? pred?.confidence ?? null;
   const confGate = !!traj?.structured_extract?.conf_gate_applied;
+  const outputFailure = predictionFailureInfo(pred);
+  const outputOutcome = predictionOutcome(pred);
 
   // ---- K 线行情：懒加载（本 Panel 仅在「标的视图」Tab 激活时挂载），失败优雅降级为占位提示 ----
-  const [klineData, setKlineData] = useState<KlinePayload | null>(null);
+  const [klineData, setKlineData] = useState<BTPerformanceKline | null>(null);
   const [klineLoading, setKlineLoading] = useState(false);
   const [klineError, setKlineError] = useState<string | null>(null);
   useEffect(() => {
@@ -632,9 +705,36 @@ function MarketViewPanel({
     };
   }, [runId, eventId]);
 
-  let strengthLabel = itemStatus === "processing" ? "决策中" : itemStatus === "pending" ? "待执行" : "中性";
+  const fullKline = klineData && Array.isArray(klineData.dates) && Array.isArray(klineData.ohlc) &&
+    Array.isArray(klineData.volumes) && klineData.dates.length > 0 &&
+    klineData.ohlc.length === klineData.dates.length && klineData.volumes.length === klineData.dates.length
+    ? {
+        symbol: klineData.symbol,
+        dates: klineData.dates,
+        ohlc: klineData.ohlc,
+        volumes: klineData.volumes,
+        event_date: klineData.event_date,
+      }
+    : null;
+  const closeOnlyDates = Array.isArray(klineData?.dates) ? klineData.dates : [];
+  const closeOnlyValues = Array.isArray(klineData?.closes)
+    ? klineData.closes.filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+    : Array.isArray(klineData?.close)
+      ? klineData.close.filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+      : [];
+
+  let strengthLabel = itemStatus === "processing" ? "决策中" : itemStatus === "pending" ? "待执行" : "未形成方向判断";
   let strengthColor = "bg-edge text-mute";
-  if (predDir === "up" && predConf != null) {
+  if (outputOutcome === "invalid_output") {
+    strengthLabel = "输出无效";
+    strengthColor = "bg-rise/10 text-rise";
+  } else if (outputOutcome === "insufficient_data") {
+    strengthLabel = "数据不足";
+    strengthColor = "bg-amber-soft text-amber";
+  } else if (outputOutcome === "voluntary_abstain") {
+    strengthLabel = "主动弃权";
+    strengthColor = "bg-violet-soft text-violet";
+  } else if (predDir === "up" && predConf != null) {
     if (predConf >= 0.8) { strengthLabel = "强多 ↑↑"; strengthColor = "bg-fall/15 text-fall"; }
     else if (predConf >= 0.6) { strengthLabel = "偏多 ↑"; strengthColor = "bg-fall/10 text-fall"; }
     else { strengthLabel = "轻多 ↗"; strengthColor = "bg-fall/5 text-fall"; }
@@ -672,8 +772,17 @@ function MarketViewPanel({
     <div className="space-y-5">
       <section className="grid grid-cols-1 gap-4 md:grid-cols-[auto_1fr] items-start">
         <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-edge bg-edge/10 px-5 py-4 text-center">
-          <div className="text-[10.5px] uppercase tracking-wider text-faint">方向预测 · T+3</div>
-          {predDir || itemStatus !== "done" ? (
+          <div className="text-[10.5px] uppercase tracking-wider text-faint">方向预测 · {(() => {
+            const horizon = String(pred?.horizon || "t3");
+            return /^t\d+$/i.test(horizon) ? `T+${horizon.slice(1)}` : horizon.toUpperCase();
+          })()}</div>
+          {outputOutcome === "invalid_output" ? (
+            <span className="rounded bg-rise/10 px-2 py-0.5 text-[11px] font-medium text-rise">无有效预测</span>
+          ) : outputOutcome === "insufficient_data" ? (
+            <span className="rounded bg-amber-soft px-2 py-0.5 text-[11px] font-medium text-amber">数据不足</span>
+          ) : outputOutcome === "voluntary_abstain" ? (
+            <span className="rounded bg-violet-soft px-2 py-0.5 text-[11px] font-medium text-violet">主动弃权</span>
+          ) : predDir || itemStatus !== "done" ? (
             <DirBadge d={predDir || (itemStatus === "processing" ? "决策中" : "TBD")} />
           ) : (
             <span className="text-faint text-[12px]">（无）</span>
@@ -685,11 +794,13 @@ function MarketViewPanel({
             <div className="flex items-baseline justify-between">
               <span className="text-[10.5px] uppercase tracking-wider text-faint">置信度 Confidence</span>
               <span className="font-mono text-[11px] text-ink">
-                {predConf != null ? (predConf * 100).toFixed(0) + "%" : itemStatus === "processing" ? "计算中" : "—"}
+                {outputOutcome === "invalid_output" || outputOutcome === "insufficient_data" || outputOutcome === "voluntary_abstain"
+                  ? "不计分"
+                  : predConf != null ? (predConf * 100).toFixed(0) + "%" : itemStatus === "processing" ? "计算中" : "—"}
               </span>
             </div>
             <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-edge/80">
-              {predConf != null && (
+              {predConf != null && outputOutcome !== "invalid_output" && outputOutcome !== "insufficient_data" && outputOutcome !== "voluntary_abstain" && (
                 <div
                   className={cls(
                     "h-full rounded-full transition-all",
@@ -701,8 +812,16 @@ function MarketViewPanel({
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-[10.5px]">
-            {confGate && <span className="rounded bg-brand-soft/60 px-2 py-0.5 text-brand">✓ Confidence Gate 已生效（低于 70% 强降 neutral）</span>}
-            {pred?.abstain && <span className="rounded bg-violet-soft px-2 py-0.5 text-violet">⚠ 执行失败 fallback neutral abstain</span>}
+            {confGate && <span className="rounded bg-brand-soft/60 px-2 py-0.5 text-brand">✓ Confidence Gate 已生效（低于 50% 强降 neutral）</span>}
+            {outputOutcome === "invalid_output" && (
+              <span className="rounded bg-rise/10 px-2 py-0.5 text-rise" title={outputFailure?.detail}>⚠ 模型输出无效 · 未计分</span>
+            )}
+            {outputOutcome === "voluntary_abstain" && (
+              <span className="rounded bg-violet-soft px-2 py-0.5 text-violet">主动弃权 · 未计分</span>
+            )}
+            {outputOutcome === "insufficient_data" && (
+              <span className="rounded bg-amber-soft px-2 py-0.5 text-amber" title={pred?.rationale || "缺少判断所需资料"}>数据不足 · 不计准确率</span>
+            )}
             {pred?.oracle_label_t3 && (
               <span className="rounded bg-edge/70 px-2 py-0.5 text-mute">
                 Oracle T+3：{(pred.oracle_label_t3 as string).toUpperCase()}
@@ -724,9 +843,9 @@ function MarketViewPanel({
           <StatRow label="事件时间" v={eventTime ? eventTime.slice(0, 19).replace("T", " ") : undefined} />
         </div>
         {title && <div className="text-[12px] text-ink/90 whitespace-pre-wrap break-words">{title}</div>}
-        {sourceUrl && (
+        {sourceUrl && sourceIsExternal ? (
           <a
-            href={sourceUrl.startsWith("http") ? sourceUrl : undefined}
+            href={sourceUrl}
             target="_blank"
             rel="noreferrer"
             className="text-[11px] text-brand truncate hover:underline"
@@ -734,13 +853,15 @@ function MarketViewPanel({
           >
             🔗 {sourceUrl}
           </a>
-        )}
+        ) : sourceUrl ? (
+          <div className="text-[11px] text-mute">📝 手工录入（无可用外链）</div>
+        ) : null}
       </section>
 
       {/* K 线图表：事件日前后日K（复权） */}
       <section className="rounded-md border border-edge p-3 space-y-3">
         <div className="flex items-baseline justify-between">
-          <div className="text-[10.5px] uppercase tracking-wider text-faint">事件日前后 K 线（前 120 / 后 15 自然日 · 前复权）</div>
+          <div className="text-[10.5px] uppercase tracking-wider text-faint">事件日前后真实行情 · 完整 OHLC 或 close-only</div>
           {klineData?.symbol && (
             <span className="rounded bg-brand-soft/40 px-1.5 py-0.5 font-mono text-[10.5px] text-brand">{klineData.symbol}</span>
           )}
@@ -756,8 +877,12 @@ function MarketViewPanel({
             <div className="mt-1 text-[11px] text-faint">（不影响上方 as-of 漂移/基准先验指标，仅 K 线图不可用。）</div>
           </div>
         )}
-        {!klineLoading && klineData && (
-          <KlineChart payload={klineData} height={380} />
+        {!klineLoading && fullKline && <KlineChart payload={fullKline} height={380} />}
+        {!klineLoading && klineData && !fullKline && closeOnlyDates.length === closeOnlyValues.length && closeOnlyDates.length > 0 && (
+          <div>
+            <div className="mb-2 inline-flex rounded bg-edge/50 px-2 py-1 text-[9.5px] text-mute">close-only · 不补造 OHLC</div>
+            <CloseOnlyChart dates={closeOnlyDates} closes={closeOnlyValues} height={340} />
+          </div>
         )}
       </section>
 

@@ -18,6 +18,7 @@ import pandas as pd
 import requests
 import yfinance as yf
 
+from ..market_runtime import call_sina_history
 from .registry import err, meta, ok, skill
 from . import cache
 from .price_data import PriceFetchError, fetch_price_frame, resolve_security_ref

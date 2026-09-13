@@ -65,6 +65,7 @@ def discover_backtesting_datasets() -> dict[str, int]:
     始终来自 backtesting 目录，而不是数据库里残留的硬编码旧路径。
     """
     from .. import config, db
+    from .datasets import materialize_contract
 
     btdir = Path(config.PROJECT_ROOT) / "backtesting"
     if not btdir.is_dir():
@@ -105,6 +106,23 @@ def discover_backtesting_datasets() -> dict[str, int]:
             date_range = {"min": min(times)[:10], "max": max(times)[:10]}
 
         lab_fn = parts.get("labels")
+        contract = materialize_contract({
+            "dataset_kind": "event",
+            "path": str(ev_path),
+            "source": {
+                "type": "local_file",
+                "provider": "project_backtesting_catalog",
+                "ref": str(ev_path),
+                "metadata": {"discovery": "startup_filename_pair"},
+            },
+            "markets": sorted(by_market),
+            "symbols": sorted(by_symbol),
+            "coverage": {
+                "start_at": date_range.get("min") if date_range else None,
+                "end_at": date_range.get("max") if date_range else None,
+                "row_count": total,
+            },
+        })
         db.upsert_bt_dataset(
             dataset_id=key,
             path=str(ev_path),
@@ -115,6 +133,18 @@ def discover_backtesting_datasets() -> dict[str, int]:
             by_symbol=dict(by_symbol) if by_symbol else None,
             date_range=date_range,
             labels_path=str(btdir / lab_fn) if lab_fn else None,
+            dataset_kind="event",
+            dataset_version=contract["dataset_version"],
+            snapshot_hash=contract.get("snapshot_hash"),
+            status=contract["status"],
+            source=contract.get("source"),
+            markets=contract.get("markets"),
+            symbols=contract.get("symbols"),
+            schema_mapping=contract.get("schema_mapping"),
+            capabilities=contract.get("capabilities"),
+            coverage=contract.get("coverage"),
+            quality_status=contract.get("quality_status") or "unverified",
+            quality_report=contract.get("quality_report"),
         )
         registered[key] = total
 
@@ -153,6 +183,8 @@ def run_predictions_file(
     resume: bool = False,
     system_prompt_variant: str = "v0",
     trajectory_ckpt_dir: str | Path | None = None,
+    model_profile_snapshot: dict | None = None,
+    target_horizon: str = "t3",
 ) -> int:
     events = load_events(events_path)
     issues = validate_events(events)
@@ -170,7 +202,23 @@ def run_predictions_file(
             existing = []
             skip_event_ids = set()
 
-    if runner == "baseline":
+    if runner == "raw_model":
+        from .raw_model import run_raw_model
+        if not model_profile_snapshot:
+            raise ValueError("独立事件模型必须提供 model_profile_snapshot")
+        preds_buffer = list(existing)
+
+        def on_raw_prediction(prediction: TeamPrediction) -> None:
+            preds_buffer.append(prediction)
+            write_jsonl(out_path, [item.to_dict() for item in preds_buffer])
+
+        preds = asyncio.run(run_raw_model(
+            events, run_id=run_id, profile=model_profile_snapshot, concurrency=concurrency,
+            target_horizon=target_horizon, skip_event_ids=skip_event_ids,
+            on_pred_callback=on_raw_prediction,
+        ))
+        merged = existing + preds
+    elif runner == "baseline":
         preds = run_baseline(events, run_id=run_id, model_version=model_version or "event-baseline-v0")
         merged = existing + preds
         write_jsonl(out_path, [p.to_dict() for p in merged])

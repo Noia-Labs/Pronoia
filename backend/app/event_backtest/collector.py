@@ -91,6 +91,10 @@ def _digest(*parts: str) -> str:
 
 def _match_cn_type(title: str, snippet: str) -> str | None:
     text = f"{title} {snippet}"
+    if re.search(r"(回购|股份回购)", text):
+        return "股份回购"
+    if re.search(r"(减持|减持计划|减持股份)", text):
+        return "股东减持"
     if re.search(r"(收购|并购|重组|分拆|定增|增发|配股|可转债|再融资)", text):
         return "并购/分拆/再融资"
     if re.search(r"(业绩预告|业绩快报|年报|半年报|中报|一季报|三季报|季度报告|财报)", text):
@@ -150,6 +154,7 @@ def collect_cn_announcement_seeds(
     dates: Iterable[str],
     keywords: Iterable[str] | None = None,
     limit_per_query: int = 30,
+    diagnostics: list[dict] | None = None,
 ) -> list[EventRecord]:
     out: list[EventRecord] = []
     seen: set[tuple[str, str]] = set()
@@ -164,14 +169,22 @@ def collect_cn_announcement_seeds(
                 label=label,
             )
             if res is None:
+                if diagnostics is not None:
+                    diagnostics.append({"query": label, "status": "failed", "message": "request failed or timed out"})
                 continue
             if isinstance(res, dict) and res.get("ok") is False:
                 # skill.err 返回：打印警告但不挂整条链路
                 log.debug("[collect] %s skill.err skip: %s", label, res.get("message"))
+                if diagnostics is not None:
+                    diagnostics.append({"query": label, "status": "failed", "message": res.get("message") or res.get("error")})
                 continue
             items = (res or {}).get("data") or []
             if not isinstance(items, list):
+                if diagnostics is not None:
+                    diagnostics.append({"query": label, "status": "failed", "message": "invalid response payload"})
                 continue
+            if diagnostics is not None:
+                diagnostics.append({"query": label, "status": "ok" if items else "empty", "count": len(items), "note": (res or {}).get("note")})
             for raw in items[: max(1, int(limit_per_query or 30))]:
                 if not isinstance(raw, dict):
                     continue
@@ -207,6 +220,7 @@ def collect_us_sec_seeds(
     *,
     symbols: Iterable[str],
     count_per_symbol: int = 20,
+    diagnostics: list[dict] | None = None,
 ) -> list[EventRecord]:
     out: list[EventRecord] = []
     seen: set[tuple[str, str]] = set()
@@ -222,14 +236,22 @@ def collect_us_sec_seeds(
             max_retry=_COLLECT_MAX_RETRY,
         )
         if res is None:
+            if diagnostics is not None:
+                diagnostics.append({"query": label, "status": "failed", "message": "request failed or timed out"})
             continue
         if isinstance(res, dict) and res.get("ok") is False:
             log.debug("[collect] %s skill.err skip: %s", label, res.get("message"))
+            if diagnostics is not None:
+                diagnostics.append({"query": label, "status": "failed", "message": res.get("message") or res.get("error")})
             continue
         payload = (res or {}).get("data") or {}
         rows = payload.get("rows") if isinstance(payload, dict) else None
         if not isinstance(rows, list):
+            if diagnostics is not None:
+                diagnostics.append({"query": label, "status": "failed", "message": "invalid response payload"})
             continue
+        if diagnostics is not None:
+            diagnostics.append({"query": label, "status": "ok" if rows else "empty", "count": len(rows)})
         for raw in rows:
             if not isinstance(raw, dict):
                 continue

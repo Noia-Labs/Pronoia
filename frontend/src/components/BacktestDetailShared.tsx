@@ -4,6 +4,7 @@ import {
   CircleDashed,
   Loader2,
   Minus,
+  Pause,
   Square,
   TrendingDown,
   TrendingUp,
@@ -14,10 +15,11 @@ import { cls } from "../utils";
 
 /* ===================================== 基础原语（badge / 纯函数 / 文本块 / 下拉） ===================================== */
 
-export function StatusBadge({ status }: { status: BTStatus | string }) {
+export function StatusBadge({ status, prefix = "" }: { status: BTStatus | string; prefix?: string }) {
   const cfg: Record<string, { label: string; className: string; icon: React.ReactNode }> = {
     pending: { label: "待启动", className: "bg-edge text-mute", icon: <CircleDashed size={11} /> },
     running: { label: "运行中", className: "bg-brand-soft text-brand", icon: <Loader2 size={11} className="animate-spin" /> },
+    paused: { label: "已暂停", className: "bg-edge text-mute", icon: <Pause size={11} /> },
     done: { label: "已完成", className: "bg-jade-soft text-jade", icon: <CheckCircle2 size={11} /> },
     failed: { label: "失败", className: "bg-rise/10 text-rise", icon: <XCircle size={11} /> },
     cancelled: { label: "已取消", className: "bg-violet-soft text-violet", icon: <Square size={11} /> },
@@ -25,7 +27,7 @@ export function StatusBadge({ status }: { status: BTStatus | string }) {
   const c = cfg[status] ?? cfg.pending;
   return (
     <span className={cls("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10.5px] font-medium", c.className)}>
-      {c.icon}{c.label}
+      {c.icon}{prefix}{c.label}
     </span>
   );
 }
@@ -78,6 +80,8 @@ export function EventStatusBadge({ status }: { status: BTEventStatus }) {
  */
 export function isFeverSyntheticSourceUrl(url: string): boolean {
   if (!url) return false;
+  // 用户手工录入事件没有外部网页；manual:// 仅作为可追溯的内部来源标识。
+  if (url.startsWith("manual://")) return true;
   const FEVER_DATASET_IDS = [
     "cn_earnings_q2",
     "cn_insiders",

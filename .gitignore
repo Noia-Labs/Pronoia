@@ -1,5 +1,6 @@
 # Environments
 .env
+.env.share
 .env.local
 .env.development.local
 .env.test.local
@@ -7,6 +8,7 @@
 **/.env
 **/.env.*
 !**/.env.example
+!**/.env.share.example
 
 # Node modules
 node_modules/
@@ -20,8 +22,8 @@ frontend/build/
 # Backend (Python)
 .venv/
 backend/venv/
-backend/__pycache__/
-backend/.pytest_cache/
+__pycache__/
+.pytest_cache/
 *.pyc
 *.pyo
 *.pyd
@@ -30,6 +32,13 @@ backend/.pytest_cache/
 backend/fever.db
 backend/fever.db-shm
 backend/fever.db-wal
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.*.model-secrets/
 
 # OS files
 .DS_Store
@@ -56,8 +65,22 @@ archive/
 
 # Runtime pids / logs (created by scripts/dev.sh)
 .run/
+.pronoia-launcher/
+.pronoia-state/
+*.log
 
 # Local technical reports
 tech-report/
+
+# Local runtime workspace. Existing tracked history must be cleaned separately.
+pronoia_run/
 test-report/pronoia_run/dotenv_backup.env
+pronoia_run/dotenv_backup.env
 pronoia_run/backup/
+
+# 本地临时产物：测试脚本与输出（AGENTS.md 约定的 temp 目录）· IDE 分享包
+temp/
+.trae-html-share-packages/
+
+# 本地 agent 协作配置（不属于上游仓库）
+/AGENTS.md

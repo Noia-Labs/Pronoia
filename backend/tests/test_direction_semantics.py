@@ -57,7 +57,6 @@ class TestDirectionSemantics(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(signal["strength"], 0.7 / 1.5)
 
     async def test_team_prompt_preserves_low_confidence_direction(self):
-        # 分支 RLVR 设计：confidence < 0.60 触发硬闸 → neutral（I1 方案A）
         async def fake_complete_json(system, user, *, max_tokens=900):
             return {
                 "pred_direction": "up",
@@ -81,8 +80,8 @@ class TestDirectionSemantics(unittest.IsolatedAsyncioTestCase):
                 [event], run_id="direction-semantics", concurrency=1
             )
 
-        # 分支 0.60 硬闸：confidence=0.55 < 0.60 → direction 被强制 neutral
-        self.assertEqual(predictions[0].pred_direction, "neutral")
+        # Confidence quantifies uncertainty; it must not erase a supported direction.
+        self.assertEqual(predictions[0].pred_direction, "up")
         self.assertAlmostEqual(predictions[0].confidence or 0, 0.55)
 
     async def test_smoke_judge_preserves_low_confidence_direction(self):

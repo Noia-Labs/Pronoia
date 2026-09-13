@@ -18,7 +18,7 @@ _PROJECT_ROOT = _BACKEND_DIR.parent
 load_dotenv(_PROJECT_ROOT / ".env", override=False)
 load_dotenv(_BACKEND_DIR / ".env", override=True)
 
-ARK_API_URL: str = os.getenv("ARK_API_URL", "https://ark.cn-beijing.volces.com/api/coding/v3")
+ARK_API_URL: str = os.getenv("ARK_API_URL", "")
 ARK_API_KEY: str = os.getenv("ARK_API_KEY", "")
 ARK_MODEL: str = os.getenv("ARK_MODEL", "deepseek-v4-flash")
 
@@ -54,6 +54,42 @@ SIMULATION_GATEWAY_URL: str = os.getenv(
 SIMULATION_GATEWAY_TIMEOUT: float = float(
     os.getenv("FEVER_SIMULATION_GATEWAY_TIMEOUT", "15")
 )
+
+# Optional whole-site HTTP Basic protection for a deliberately shared instance.
+# Keeping both values empty preserves the local-first, login-free experience.
+SHARE_USER: str = os.getenv("PRONOIA_SHARE_USER", "")
+SHARE_PASSWORD: str = os.getenv("PRONOIA_SHARE_PASSWORD", "")
+
+
+def validate_share_auth_config() -> None:
+    """Reject an incomplete sharing configuration without exposing secrets."""
+    if bool(SHARE_USER) != bool(SHARE_PASSWORD):
+        raise RuntimeError(
+            "PRONOIA_SHARE_USER and PRONOIA_SHARE_PASSWORD must be configured together"
+        )
+    if SHARE_USER and ":" in SHARE_USER:
+        raise RuntimeError("PRONOIA_SHARE_USER must not contain a colon")
+    if SHARE_PASSWORD and len(SHARE_PASSWORD) < 12:
+        raise RuntimeError("PRONOIA_SHARE_PASSWORD must contain at least 12 characters")
+    if any(ord(char) < 32 or ord(char) == 127 for char in SHARE_USER + SHARE_PASSWORD):
+        raise RuntimeError("Pronoia sharing credentials must not contain control characters")
+
+
+def share_auth_enabled() -> bool:
+    """Return whether whole-site sharing protection is enabled."""
+    return bool(SHARE_USER and SHARE_PASSWORD)
+
+# Local-first security boundary. Additional trusted web origins can be supplied
+# explicitly for a deployed instance; the default never exposes data to arbitrary
+# sites through permissive CORS.
+CORS_ORIGINS: list[str] = [
+    item.strip()
+    for item in os.getenv(
+        "PRONOIA_CORS_ORIGINS",
+        "http://127.0.0.1:5173,http://localhost:5173",
+    ).split(",")
+    if item.strip()
+]
 
 # Skill execution guardrails (design.md §2/§4)
 #
