@@ -327,6 +327,7 @@ skill/prompt 策略更新」的长期自进化闭环。
 
 ## 📋 更新日志
 
+- **3.13.0** · 2026-09-13 · 功能：合入 main 最新代码（Arena 工作区与模型对比、market_runtime 行情运行时、benchmark 基准解析、launch 启动脚本体系），修复 vite 构建缺少 @types/node
 - **3.12.1** · 2026-09-05 · 修补：代码整理：运营管线脚本归入 pipelines/（labeling/forward_claims/today/collect）、today_data→data_snapshots、docxml→docs/xml、tmp_work→archive，统一路径为基于 __file__ 自动定位
 - **3.12.0** · 2026-08-21 · 功能：新增对话历史上下文继承（追问沿用前序Case）、对话失败/暂停醒目标识与一键重试卡片、Team模式4处静默阻塞点实时进度提示、回测中心重构（可插拔多指标分级展示、自动发现数据集、Arena横向比对、成本效果帕累托图）
 - **3.11.0** · 2026-08-20 · 功能：新增可插拔指标系统（18+ 指标 core/extended/breakdown 三级、列表页指标列动态切换）；新增 Arena 横向比对平台（同数据集多 Run 360° 评测：排名/雷达/显著性检验/事件级 H2H）；新增成本·效果二维散点图 + 帕累托边界分析（非支配排序 + L 型参考线，X/Y 轴可切换）；修复回测详情页 compat 层老数据无数值（acc/k/n/Wilson 从 bt_runs 标量字段 fallback）；Arena 创建候选仅收录已完成（status=done + done_events>0）的回测 Run

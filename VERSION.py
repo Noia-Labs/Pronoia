@@ -10,4 +10,4 @@
     python scripts/bump.py minor "新增产业链传导预测"
     python scripts/bump.py patch "fix: 修复 X" --commit --push
 """
-__version__ = "3.12.1"
+__version__ = "3.13.0"
