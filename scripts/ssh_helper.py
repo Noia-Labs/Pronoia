@@ -2,11 +2,19 @@
 """ssh_helper.py — paramiko-based SSH/SFTP to remote GPU machine."""
 import paramiko, sys, time, os
 
-HOST = "connect.westd.seetacloud.com"
-PORT = 12109
-USER = "root"
-PASS = "En6mms06iDbK"
-PROXY = "nc -X connect -x 127.0.0.1:18080 %h %p"
+# 通过环境变量配置远程机器，切勿把凭据提交进仓库：
+#   RLVR_SSH_HOST / RLVR_SSH_PORT / RLVR_SSH_USER / RLVR_SSH_PASSWORD
+HOST = os.environ.get("RLVR_SSH_HOST", "")
+PORT = int(os.environ.get("RLVR_SSH_PORT", "22"))
+USER = os.environ.get("RLVR_SSH_USER", "root")
+PASS = os.environ.get("RLVR_SSH_PASSWORD", "")
+PROXY = os.environ.get(
+    "RLVR_SSH_PROXY_COMMAND",
+    f"nc -X connect -x {os.environ.get('RLVR_PROXY_HOST', '127.0.0.1')}:{os.environ.get('RLVR_PROXY_PORT', '18080')} %h %p",
+)
+
+if not HOST or not PASS:
+    raise SystemExit("请先设置 RLVR_SSH_HOST 与 RLVR_SSH_PASSWORD 环境变量")
 
 def _make_client():
     client = paramiko.SSHClient()

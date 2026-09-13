@@ -1,16 +1,20 @@
 # 回测数据集使用说明
 
-本目录存放 FEVER 项目当前用于全量回测的 1000 条事件池和对应的 Oracle 标签。
+本目录存放回测研究代码与数据集规范。**数据文件不进入版本库**：1000 条全量事件池、
+Oracle 标签、轨迹 checkpoint 与实验产物均为本地数据，由 `.gitignore` 排除；
+仓库内仅跟踪 `data/samples/` 下的 8 个小样本（每市场 10 条，用于格式示例与冒烟测试）。
 
-## 文件清单
+## 数据文件（本地，不入库）
 
 | 文件 | 说明 |
 |---|---|
 | `events_cn_us_1000_v1.jsonl` | 事件池 v1（CN+US 1000 条），每行一个 JSON 事件记录 |
 | `labels_cn_us_1000_v1.jsonl` | Oracle 标签 v1（CN+US 1000 条），含 T+3/7/15/30/60 + avg_all 多 horizon 方向标签 |
-| [`mirofish_actor_scale_v1/`](mirofish_actor_scale_v1/) | 多智能体 4/6/8 角色规模实验、紧凑结果与离线复算脚本 |
-| [`mirofish_decision_support_v1/`](mirofish_decision_support_v1/) | 12 案例情景决策支持评测、v5/v6 编译器诊断与离线复算脚本 |
+| `_trajectory_ckpt_*/` | 轨迹 checkpoint（断点续跑用，可删除重建） |
+| `mirofish_*/` | 多智能体情景推演实验产物 |
 | `README.md` | 本说明文档 |
+
+> 需要重建数据集时，使用 `scripts/build_real_datasets_from_v9.py` 与 Labeller CLI 重新生成。
 
 **当前版本：v1**（首版正式数据集 + avgCAR 多 horizon 标签体系）
 

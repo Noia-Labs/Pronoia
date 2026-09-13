@@ -78,6 +78,7 @@ rsync -a \
   --exclude '/.pytest_cache/' \
   --exclude '/.trae-html-share-packages/' \
   --exclude '/data/' \
+  --exclude '/share/' \
   --exclude '/backtesting/' \
   --exclude '/pronoia_run/' \
   --exclude '/work/' \
@@ -95,9 +96,6 @@ rsync -a \
   --exclude '/backend/venv/' \
   --exclude '/backend/fever.db*' \
   --exclude '/backend/tests/_e2e_ckpt/' \
-  --exclude '/docs/20260729_design.md' \
-  --exclude '/docs/20260816_CODE_WIKI.md' \
-  --exclude '/docs/20260817_plan.md' \
   --exclude '/scripts/generate_datasets.py' \
   --exclude '**/__pycache__/' \
   --exclude '**/.pytest_cache/' \
@@ -109,12 +107,18 @@ rsync -a \
 
 # Examples are deliberately restored after the broad .env.* exclusion.
 cp "$ROOT_DIR/.env.example" "$STAGE_DIR/.env.example"
-cp "$ROOT_DIR/.env.share.example" "$STAGE_DIR/.env.share.example"
+cp "$ROOT_DIR/share/.env.share.example" "$STAGE_DIR/.env.share.example"
+# 分享包资产：macOS 启动器与面向接收者的 README/快速开始。
+cp "$ROOT_DIR/share/macos/"*.command "$STAGE_DIR/"
 if [ -f "$STAGE_DIR/README.md" ]; then
   mv "$STAGE_DIR/README.md" "$STAGE_DIR/docs/LEGACY_PROJECT_README.md"
 fi
-cp "$STAGE_DIR/SHARE_README.md" "$STAGE_DIR/README.md"
-cp "$STAGE_DIR/SHARE_README.md" "$STAGE_DIR/00_START_HERE.md"
+cp "$ROOT_DIR/share/README.md" "$STAGE_DIR/README.md"
+cp "$ROOT_DIR/share/README.md" "$STAGE_DIR/00_START_HERE.md"
+cp "$ROOT_DIR/share/SANITIZATION.md" "$STAGE_DIR/SHARE_SANITIZATION.md"
+# 附带小样本数据，便于接收者立即体验回测格式。
+mkdir -p "$STAGE_DIR/data/samples"
+cp "$ROOT_DIR/data/samples/"*.jsonl "$STAGE_DIR/data/samples/"
 
 if find "$STAGE_DIR" -type l -print -quit | grep -q .; then
   printf '安全检查失败：分享包中发现符号链接。\n' >&2

@@ -1,4 +1,4 @@
-// 与后端 schemas 对齐的类型定义（docs/20260729_design.md §7/§8/§9）
+// 与后端 schemas 对齐的类型定义
 
 export type Mode = "auto" | "agent" | "team";
 export type RightTab = "artifacts" | "skills" | "team" | "logic";

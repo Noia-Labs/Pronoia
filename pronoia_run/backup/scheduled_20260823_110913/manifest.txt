@@ -1,5 +1,0 @@
-timestamp=2026-08-23T11:09:14+00:00
-tag=scheduled
-rc_lines=700
-traj_files=700
-rc_sha256=b93644a039c7410b08b50ee8bbe7759485784d9f369bdd7893d94c6fd9dd8285

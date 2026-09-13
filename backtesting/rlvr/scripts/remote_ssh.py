@@ -13,12 +13,17 @@ import sys
 
 import paramiko
 
-HOST = "connect.westd.seetacloud.com"
-PORT = 12109
-USER = "root"
-PASSWORD = "En6mms06iDbK"
-PROXY_HOST = "127.0.0.1"
-PROXY_PORT = 18080
+# 通过环境变量配置远程机器，切勿把凭据提交进仓库：
+#   RLVR_SSH_HOST / RLVR_SSH_PORT / RLVR_SSH_USER / RLVR_SSH_PASSWORD
+HOST = os.environ.get("RLVR_SSH_HOST", "")
+PORT = int(os.environ.get("RLVR_SSH_PORT", "22"))
+USER = os.environ.get("RLVR_SSH_USER", "root")
+PASSWORD = os.environ.get("RLVR_SSH_PASSWORD", "")
+PROXY_HOST = os.environ.get("RLVR_PROXY_HOST", "127.0.0.1")
+PROXY_PORT = int(os.environ.get("RLVR_PROXY_PORT", "18080"))
+
+if not HOST or not PASSWORD:
+    raise SystemExit("请先设置 RLVR_SSH_HOST 与 RLVR_SSH_PASSWORD 环境变量")
 
 
 def _open_transport():
