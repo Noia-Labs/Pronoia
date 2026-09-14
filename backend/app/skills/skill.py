@@ -490,6 +490,9 @@ async def news_intel(symbol: str | None = None,
     raw_symbol = (symbol or "").strip()
     us_stock = bool(raw_symbol) and is_us_symbol(raw_symbol)
     code = "".join(ch for ch in raw_symbol if ch.isdigit())[-6:] if raw_symbol else ""
+    # limit 封顶 20：底层 llm_web_latest 内部上限即为 20，更大的请求只
+    # 会得到相同结果（还会破坏同参缓存去重），统一收敛到同一取值。
+    limit = max(1, min(int(limit or 8), 20))
     kind = kind or (["news", "announcement"] if code else ["global"])
     tasks: list[tuple[str, dict]] = []
     notes: list[str] = []

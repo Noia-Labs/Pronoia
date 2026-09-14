@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import re
 import threading
@@ -378,6 +379,36 @@ async def run_agent(
     client = get_client()
     consecutive_failures: dict[str, int] = {}
 
+    # 单轮（一次 agent 运行）内的技能结果备忘：同参重复调用（如 router
+    # 反复以不同 limit 请求同一资讯源）直接复用首次结果，避免重复执行
+    # 慢技能（联网搜索单次 20~30s）。仅缓存成功结果；错误不缓存以便重试。
+    skill_memo: dict[tuple[str, str], dict] = {}
+
+    def _memo_args(name: str, args: dict) -> dict:
+        # news_intel 的 limit 在技能内部封顶 20：>20 的请求与 =20 的语义
+        # 完全相同，归一后才能让 router 递增 limit 的重复调用命中缓存。
+        if name == "news_intel":
+            normalized = dict(args)
+            try:
+                normalized["limit"] = min(max(int(normalized.get("limit") or 8), 1), 20)
+            except (TypeError, ValueError):
+                pass
+            return normalized
+        return args
+
+    async def _exec_skill_memo(name: str, args: dict) -> dict:
+        key = (name, json.dumps(_memo_args(name, args), sort_keys=True, ensure_ascii=False, default=str))
+        hit = skill_memo.get(key)
+        if hit is not None:
+            result = copy.deepcopy(hit)
+            result["_team_shared"] = True  # 复用既有 artifact，不重复落库
+            return result
+        result = await skill_executor(name, args)
+        if result.get("ok"):
+            skill_memo[key] = copy.deepcopy(result)
+        return result
+
+
     for round_no in range(1, max_rounds + 1):
         state["rounds"] = round_no
         kwargs: dict[str, Any] = {
@@ -475,7 +506,7 @@ async def run_agent(
                 args = {}
             yield {"type": "tool_call", "agent": agent_id, "id": tc_id,
                    "skill": name, "args": args}
-            result = await skill_executor(name, args)
+            result = await _exec_skill_memo(name, args)
 
             artifact_ids: list[str] = []
             reused = bool(result.get("_team_shared"))

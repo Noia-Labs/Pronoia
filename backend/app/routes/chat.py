@@ -290,10 +290,11 @@ _SSE_HEARTBEAT_SECONDS = 4.0
 async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
     """Keep endpoint, credential and model id consistent for one chat turn.
 
-    外层再包一层心跳：内部阶段（如路由器非流式 LLM_JSON 调用）可能长时间
-    不产出事件，中间代理（沙箱预览代理等）会在 ~15s 空闲后掐断连接，浏览器
-    表现为 "network error"。静默超过 4s 时发送 SSE 注释帧 `: ping` 保活，
-    前端解析器只认 `data:` 行，注释帧会被自动忽略。
+    外层再包一层心跳：内部阶段（如路由器非流式 LLM_JSON 调用、慢技能执行）
+    可能长时间不产出事件，中间代理（沙箱预览代理等）会在空闲后掐断连接，
+    浏览器表现为 "network error"。静默超过 4s 时发送 `data: {"type":"ping"}`
+    保活帧：前端 handleEvent 对未知 type 走 switch 直落、安全忽略；用真实
+    data 帧而非 SSE 注释，兼容只按数据帧计活/解析 SSE 的代理。
     """
 
     target = resolve_runtime_target()
@@ -306,7 +307,7 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
                     pending = asyncio.ensure_future(stream.__anext__())
                 done, _ = await asyncio.wait({pending}, timeout=_SSE_HEARTBEAT_SECONDS)
                 if not done:
-                    yield ": ping\n\n"
+                    yield 'data: {"type":"ping"}\n\n'
                     continue
                 task, pending = pending, None
                 try:
@@ -316,10 +317,19 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
                 yield event
         finally:
             if pending is not None:
+                # 先等取消真正送达内部生成器，否则 aclose() 会撞上
+                # "asynchronous generator is already running"
                 pending.cancel()
+                try:
+                    await pending
+                except BaseException:  # noqa: BLE001
+                    pass
             # Explicitly close the delegated async generator so its durability
             # checkpoint finishes before callers tear down the database.
-            await stream.aclose()
+            try:
+                await stream.aclose()
+            except BaseException:  # noqa: BLE001
+                pass
 
 
 @router.post("/chat")
