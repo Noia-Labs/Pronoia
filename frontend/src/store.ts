@@ -480,17 +480,35 @@ let abortCtl: AbortController | null = null;
 let currentCtx: { caseId: string; messageId: string; question: string } | null = null;
 
 /**
- * 公网预览网关会间歇性掐断 SSE 长连接（ERR_INCOMPLETE_CHUNKED_ENCODING，
- * 浏览器网络层自动打红错，无法被代码抑制）。一旦发生一次断流，本会话后续
- * 消息直接走 detach+轮询模式：不建立长连接，也就不会再产生该错误。
- * 用 sessionStorage 持久化，刷新页面后保持。
+ * 公网预览网关（*.traecontent.cn 等）会间歇性掐断 SSE 长连接，浏览器网络层
+ * 自动打 ERR_INCOMPLETE_CHUNKED_ENCODING 红错，代码无法抑制。治本方案：
+ * 检测到页面运行在预览网关上时，默认完全不走 SSE——对话直接 detach+轮询，
+ * 从第一次请求起就不存在长连接，该错误从根上消失。
+ * 本地开发（localhost）不受影响，保持 SSE 流式。
+ * 手动覆盖：sessionStorage["pronoia.prefer_polling"]="1"/"0"。
  */
+const _POLL_KEY = "pronoia.prefer_polling";
+const _isPreviewGateway = (() => {
+  try {
+    const h = window.location.hostname;
+    if (h === "localhost" || h === "127.0.0.1" || h === "[::1]") return false;
+    // 非本机地址一律按不可信网关处理（预览代理、内网穿透、反向代理同理）
+    return true;
+  } catch {
+    return false;
+  }
+})();
 let preferPolling = (() => {
-  try { return sessionStorage.getItem("pronoia.prefer_polling") === "1"; } catch { return false; }
+  try {
+    const v = sessionStorage.getItem(_POLL_KEY);
+    if (v === "1") return true;
+    if (v === "0") return false;
+  } catch { /* ignore */ }
+  return _isPreviewGateway;
 })();
 function enablePreferPolling() {
   preferPolling = true;
-  try { sessionStorage.setItem("pronoia.prefer_polling", "1"); } catch { /* ignore */ }
+  try { sessionStorage.setItem(_POLL_KEY, "1"); } catch { /* ignore */ }
 }
 
 /** live-log 的 EventSource 连接（liveLogOpen=true 时建立，关闭时 close） */
