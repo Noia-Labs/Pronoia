@@ -219,7 +219,7 @@ function Hero() {
       <div className="w-full max-w-2xl animate-fadeUp">
         <div className="flex items-center gap-2 text-[11.5px] font-medium tracking-widest text-jade">
           <Sparkles size={13} />
-          PRONOIA EVENT RESEARCH WORKBENCH
+          FIN EVENT RESEARCH WORKBENCH
         </div>
         <h2 className="mt-3 font-serif text-[34px] font-bold leading-tight text-ink">
           Hunt events. <span className="text-brand">Trace echoes.</span>

@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="docs/images/pronoia-logo.png" alt="Pronoia" width="220">
-</p>
-
 # Pronoia
 
 > **Hunt events. Trace echoes.** — 对话式 AI 金融事件分析工作台：提问即研究。
