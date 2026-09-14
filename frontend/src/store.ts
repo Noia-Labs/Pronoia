@@ -562,7 +562,7 @@ async function salvageFromServer(caseId: string, question: string) {
 async function pollUntilComplete(
   caseId: string,
   question: string,
-  onProgress?: (parts: Part[], content: string) => void,
+  onProgress?: (parts: Part[], content: string, artifacts: Artifact[]) => void,
   signal?: AbortSignal,
 ) {
   const POLL_MS = 1500;
@@ -591,12 +591,13 @@ async function pollUntilComplete(
       if (!last || last.role !== "assistant") { await sleep(POLL_MS); continue; }
       if (!prev || prev.role !== "user" || prev.content !== question) { await sleep(POLL_MS); continue; }
       const content = (last.content ?? "").trim();
+      const artifacts = d.artifacts ?? [];
       const key = `${content.length}:${traceLen(last.tool_trace)}`;
       if (onProgress) {
-        // 无论正文是否已流出，都把已落库的 tool_trace/正文实时映射到 UI。
+        // 无论正文是否已流出，都把已落库的 tool_trace/正文/产物实时映射到 UI。
         // 生成尚在 thinking/调工具阶段时 content 为空，但 tool_trace 在增长，
         // 必须同步到界面，否则断流后用户会看到"卡住"的假死状态。
-        onProgress(partsFromHistory(last), last.content ?? "");
+        onProgress(partsFromHistory(last), last.content ?? "", artifacts);
       }
       if (key === lastKey) {
         stable++;
@@ -900,8 +901,11 @@ export const useStore = create<FeverState>((set, get) => {
         agent: useAgent,
         team_members: useMode === "team" ? get().teamMembers : undefined,
       };
-      const progressSync = (parts: Part[], textContent: string) =>
+      const progressSync = (parts: Part[], textContent: string, polledArtifacts: Artifact[]) => {
         patchPending((m) => ({ ...m, parts, content: textContent }));
+        // 轮询期间产物也实时同步到右栏（SSE 模式下是 artifact 事件即时推送的）
+        set({ artifacts: sortArtifacts(polledArtifacts) });
+      };
       const applyPolled = (polled: NonNullable<Awaited<ReturnType<typeof pollUntilComplete>>>) => {
         finalizePending((m) => ({
           ...m,

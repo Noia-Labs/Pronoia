@@ -99,7 +99,7 @@ async def _run_chat(req: ChatRequest, queue: "asyncio.Queue") -> None:
     persisted_trace: list[dict] = []
     record_agent = req.agent if req.mode == "agent" and req.agent else "router"
     last_checkpoint = 0.0
-    last_snapshot: tuple[int, int] = (-1, -1)
+    last_snapshot: tuple[int, ...] = (-1, -1, -1)
     stream_completed = False
 
     # Create the assistant row before any long-running work. Artifacts created
@@ -119,6 +119,26 @@ async def _run_chat(req: ChatRequest, queue: "asyncio.Queue") -> None:
 
     def remember_event(event: dict) -> None:
         event_type = str(event.get("type") or "")
+        if event_type == "thinking":
+            # 推理过程也持久化：断流/纯轮询模式下前端只能依靠落库的
+            # tool_trace 还原现场，thinking 不存就会"没有推理过程"。
+            # 同一 agent 的连续 delta 合并追加到尾部条目，避免每 token 一行。
+            delta = str(event.get("delta") or "")
+            if not delta:
+                return
+            agent = event.get("agent")
+            last = persisted_trace[-1] if persisted_trace else None
+            if (
+                isinstance(last, dict)
+                and last.get("type") == "thinking"
+                and last.get("agent") == agent
+            ):
+                last["text"] = str(last.get("text") or "") + delta
+            else:
+                persisted_trace.append(
+                    {"type": "thinking", "agent": agent, "text": delta}
+                )
+            return
         if event_type not in {
             "tool_call", "tool_result", "artifact", "agent_step", "logic_items"
         }:
@@ -137,7 +157,14 @@ async def _run_chat(req: ChatRequest, queue: "asyncio.Queue") -> None:
 
     async def checkpoint(*, force: bool = False) -> None:
         nonlocal last_checkpoint, last_snapshot
-        snapshot = (len(state.get("content") or ""), len(persisted_trace))
+        # 末位 thinking 条目是原地追加的，len(persisted_trace) 不变，
+        # 因此 snapshot 额外纳入 thinking 总长度，保证思考增量也能触发落库
+        thinking_len = sum(
+            len(str(item.get("text") or ""))
+            for item in persisted_trace
+            if item.get("type") == "thinking"
+        )
+        snapshot = (len(state.get("content") or ""), len(persisted_trace), thinking_len)
         now = time.monotonic()
         if snapshot == last_snapshot:
             return
