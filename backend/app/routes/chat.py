@@ -359,7 +359,20 @@ async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
 
 
 @router.post("/chat")
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, detach: bool = False):
+    if detach:
+        # 纯轮询模式：立即启动 detached 生成并返回 case_id，不建立 SSE 长连接。
+        # 用于公网预览网关频繁掐断长连接的环境——短 JSON 响应几乎不会被掐，
+        # 前端随后通过 GET /cases/{id} 轮询已落库进度。
+        case = db.get_case(req.case_id) if req.case_id else None
+        if case is None:
+            case = db.create_case()
+        req.case_id = case["id"]
+        queue: asyncio.Queue = asyncio.Queue(maxsize=8)  # 无人订阅，事件满了即丢
+        target = resolve_runtime_target()
+        with runtime_target_context(target):
+            asyncio.ensure_future(_run_chat(req, queue))
+        return {"case_id": case["id"]}
     return StreamingResponse(
         _chat_stream(req),
         media_type="text/event-stream",

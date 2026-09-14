@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, streamChat, StreamAbortedError } from "./api";
+import { api, streamChat, startChatDetached, StreamAbortedError } from "./api";
 import type {
   AgentMeta,
   ArenaItem,
@@ -479,6 +479,20 @@ let abortCtl: AbortController | null = null;
 /** 当前流式所属 case / message / question：logic_items 事件入库存档时使用 */
 let currentCtx: { caseId: string; messageId: string; question: string } | null = null;
 
+/**
+ * 公网预览网关会间歇性掐断 SSE 长连接（ERR_INCOMPLETE_CHUNKED_ENCODING，
+ * 浏览器网络层自动打红错，无法被代码抑制）。一旦发生一次断流，本会话后续
+ * 消息直接走 detach+轮询模式：不建立长连接，也就不会再产生该错误。
+ * 用 sessionStorage 持久化，刷新页面后保持。
+ */
+let preferPolling = (() => {
+  try { return sessionStorage.getItem("pronoia.prefer_polling") === "1"; } catch { return false; }
+})();
+function enablePreferPolling() {
+  preferPolling = true;
+  try { sessionStorage.setItem("pronoia.prefer_polling", "1"); } catch { /* ignore */ }
+}
+
 /** live-log 的 EventSource 连接（liveLogOpen=true 时建立，关闭时 close） */
 let liveLogEs: EventSource | null = null;
 
@@ -854,22 +868,54 @@ export const useStore = create<FeverState>((set, get) => {
       currentCtx = { caseId, messageId: asstMsg.id, question: content };
 
       // 浏览器到预览网关的公网链路可能间歇性掐断长连接（沙箱内部链路已验证
-      // 无限制）。后端生成是独立 Task（detached），断连不影响生成落库。因此
-      // 断流后的正确做法不是"重新生成"，而是"轮询已落库进度直到完成"：
-      //   1) 先 salvage 一次：若正文已落库（生成已跑完）→ 直接收尾
-      //   2) 否则 pollUntilComplete：持续轮询，把后端持续落库的进度实时映射到
-      //      UI，直到内容稳定（生成完成）→ 收尾；全程不再发新的生成请求
-      //   3) 仅当轮询也拿不到结果（生成任务异常死掉 / 超时）才兜底重试 1 次
+      // 无限制）。后端生成是独立 Task（detached），断连不影响生成落库。
+      // 两种通道：
+      //   A) SSE 流式（默认，本地/稳定链路）：实时推送 token
+      //   B) detach + 轮询（本会话发生过断流后自动切换）：POST 立即返回，
+      //      前端轮询已落库进度——全程无长连接，不会再触发网关掐流红错
       let streamError: unknown = null;
+
+      const chatBody = {
+        case_id: caseId,
+        message: content,
+        mode: useMode,
+        agent: useAgent,
+        team_members: useMode === "team" ? get().teamMembers : undefined,
+      };
+      const progressSync = (parts: Part[], textContent: string) =>
+        patchPending((m) => ({ ...m, parts, content: textContent }));
+      const applyPolled = (polled: NonNullable<Awaited<ReturnType<typeof pollUntilComplete>>>) => {
+        finalizePending((m) => ({
+          ...m,
+          id: polled.last.id,
+          content: polled.last.content,
+          parts: polled.parts,
+        }));
+        set({ artifacts: sortArtifacts(polled.artifacts ?? []) });
+      };
+
+      if (preferPolling) {
+        // ---- 通道 B：detach + 轮询 ----
+        try {
+          await startChatDetached(chatBody);
+          const polled = await pollUntilComplete(caseId, content, progressSync, abortCtl.signal);
+          if (polled) {
+            applyPolled(polled);
+            streamError = null;
+          } else if (abortCtl.signal.aborted) {
+            streamError = new StreamAbortedError();
+          } else {
+            streamError = new Error("生成超时，请点击重新生成");
+          }
+        } catch (e) {
+          streamError = e;
+        }
+      } else {
+      // ---- 通道 A：SSE 流式，断流后自动降级为轮询 ----
       const attemptStream = async () => {
         abortCtl = new AbortController();
         currentCtx = { caseId, messageId: asstMsg.id, question: content };
-        await streamChat(
-          { case_id: caseId, message: content, mode: useMode,
-            agent: useAgent,
-            team_members: useMode === "team" ? get().teamMembers : undefined },
-          { onEvent: handleEvent, signal: abortCtl.signal },
-        );
+        await streamChat(chatBody, { onEvent: handleEvent, signal: abortCtl.signal });
         if (get().streaming) finalizePending();
       };
 
@@ -881,7 +927,9 @@ export const useStore = create<FeverState>((set, get) => {
         if (e instanceof StreamAbortedError) {
           // 用户主动停止 / 页面隐藏：不做轮询挽回
         } else {
-          // 断流：后端 detached 生成仍在跑，改为轮询订阅已落库进度。
+          // 断流：本会话后续消息改用 detach+轮询，不再触碰长连接
+          enablePreferPolling();
+          // 后端 detached 生成仍在跑，改为轮询订阅已落库进度。
           // 先在 UI 上明确提示，避免用户在无反馈期间误以为卡死。
           patchPending((m) => ({
             ...m,
@@ -898,18 +946,11 @@ export const useStore = create<FeverState>((set, get) => {
           const polled = await pollUntilComplete(
             caseId,
             content,
-            (parts, textContent) =>
-              patchPending((m) => ({ ...m, parts, content: textContent })),
+            progressSync,
             abortCtl?.signal ?? undefined,
           );
           if (polled) {
-            finalizePending((m) => ({
-              ...m,
-              id: polled.last.id,
-              content: polled.last.content,
-              parts: polled.parts,
-            }));
-            set({ artifacts: sortArtifacts(polled.artifacts ?? []) });
+            applyPolled(polled);
             streamError = null;
           } else if (abortCtl?.signal.aborted) {
             streamError = new StreamAbortedError();
@@ -918,8 +959,14 @@ export const useStore = create<FeverState>((set, get) => {
             patchPending((m) => ({ ...m, parts: [], content: "" }));
             await sleep(1200);
             try {
-              await attemptStream();
-              streamError = null;
+              await startChatDetached(chatBody);
+              const retried = await pollUntilComplete(caseId, content, progressSync, abortCtl.signal);
+              if (retried) {
+                applyPolled(retried);
+                streamError = null;
+              } else {
+                streamError = new Error("生成超时，请点击重新生成");
+              }
             } catch (e2) {
               streamError = e2;
               if (!(e2 instanceof StreamAbortedError)) {
@@ -938,6 +985,7 @@ export const useStore = create<FeverState>((set, get) => {
             }
           }
         }
+      }
       }
       if (streamError !== null) {
         if (streamError instanceof StreamAbortedError) {

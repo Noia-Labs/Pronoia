@@ -651,6 +651,37 @@ export async function streamBacktest(
   if (buf.trim()) handleFrame(buf);
 }
 
+/**
+ * 纯轮询模式发起对话：POST /api/chat?detach=1
+ * 后端立即启动 detached 生成并返回 case_id，不建立 SSE 长连接。
+ * 用于公网预览网关频繁掐断长连接的环境（ERR_INCOMPLETE_CHUNKED_ENCODING），
+ * 配合轮询 GET /cases/{id} 获取已落库进度。
+ */
+export async function startChatDetached(body: {
+  case_id: string;
+  message: string;
+  mode: Mode;
+  agent?: string | null;
+  team_members?: string[] | null;
+}): Promise<{ case_id: string }> {
+  const res = await fetch(`${BASE}/chat?detach=1`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const j = await res.json();
+      if (j?.detail) detail = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail);
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  return (await res.json()) as { case_id: string };
+}
+
 /** fetch 主动中止的标记（区别于真实网络错误），供 store 静默处理 */
 export class StreamAbortedError extends Error {
   constructor() { super("stream-aborted"); this.name = "StreamAbortedError"; }
