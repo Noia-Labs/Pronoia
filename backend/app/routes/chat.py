@@ -343,3 +343,25 @@ async def chat(req: ChatRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/sse_probe")
+async def sse_probe(seconds: int = 300):
+    """诊断端点：每 2s 发一帧 ping 持续 N 秒，用于测量代理层 SSE 硬超时。"""
+    async def gen() -> AsyncIterator[str]:
+        start = time.time()
+        n = 0
+        while time.time() - start < seconds:
+            n += 1
+            yield 'data: {"type":"ping","n":%d,"t":%.1f}\n\n' % (n, time.time() - start)
+            await asyncio.sleep(2)
+        yield 'data: {"type":"done","frames":%d}\n\n' % n
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

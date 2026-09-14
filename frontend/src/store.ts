@@ -494,6 +494,29 @@ if (typeof window !== "undefined") {
   window.addEventListener("beforeunload", silentAbort, { capture: true });
 }
 
+/**
+ * 断流挽回：公网链路把 SSE 掐断时，后端已把本轮已产出内容落库（含部分
+ * 内容与 tool_trace）。识别条件：最后一条是 assistant，且其前一条正好是
+ * 本轮发出的 user 消息（内容逐字匹配）。要求已有正文内容才直接收尾；
+ * 只有 tool_trace 没正文（典型：router 还在 thinking/调工具早期被掐）时
+ * 返回 null 走自动重试，避免出现"无正文又无错误标记"的假完成消息。
+ */
+async function salvageFromServer(caseId: string, question: string) {
+  try {
+    const d = await api.caseDetail(caseId);
+    const msgs = d.messages ?? [];
+    const last = msgs[msgs.length - 1];
+    const prev = msgs[msgs.length - 2];
+    if (!last || last.role !== "assistant") return null;
+    if (!prev || prev.role !== "user" || prev.content !== question) return null;
+    if (!(last.content ?? "").trim()) return null;
+    const parts = partsFromHistory(last);
+    return { last, parts, artifacts: d.artifacts ?? [] };
+  } catch {
+    return null;
+  }
+}
+
 export const useStore = create<FeverState>((set, get) => {
   const prefs = loadUIPrefs();
   const initialRoute = routeFromLocation();
@@ -760,17 +783,52 @@ export const useStore = create<FeverState>((set, get) => {
 
       abortCtl = new AbortController();
       currentCtx = { caseId, messageId: asstMsg.id, question: content };
-      try {
-        await streamChat(
-          { case_id: caseId, message: content, mode: useMode,
-            agent: useAgent,
-            team_members: useMode === "team" ? get().teamMembers : undefined },
-          { onEvent: handleEvent, signal: abortCtl.signal },
-        );
-        // 流正常结束但未收到 done/error 时兜底收尾
-        if (get().streaming) finalizePending();
-      } catch (e) {
-        if (e instanceof StreamAbortedError) {
+
+      // 浏览器到预览网关的公网链路可能间歇性掐断长连接（沙箱内部链路已验证
+      // 无限制）。此处做两层兜底：
+      // 1) 断流后先从服务端挽回已保存内容（后端断连时会把已产出部分落库）
+      // 2) 无可挽回内容时自动重试整个请求（最多 3 次递增退避）
+      const MAX_STREAM_ATTEMPTS = 3;
+      let streamError: unknown = null;
+      for (let attempt = 1; attempt <= MAX_STREAM_ATTEMPTS; attempt++) {
+        abortCtl = new AbortController();
+        currentCtx = { caseId, messageId: asstMsg.id, question: content };
+        try {
+          await streamChat(
+            { case_id: caseId, message: content, mode: useMode,
+              agent: useAgent,
+              team_members: useMode === "team" ? get().teamMembers : undefined },
+            { onEvent: handleEvent, signal: abortCtl.signal },
+          );
+          // 流正常结束但未收到 done/error 时兜底收尾
+          if (get().streaming) finalizePending();
+          streamError = null;
+          break;
+        } catch (e) {
+          streamError = e;
+          if (e instanceof StreamAbortedError) break;
+          const salvaged = await salvageFromServer(caseId, content);
+          if (salvaged) {
+            // 服务端已有本轮流出的部分结果：直接挽回收尾，不再重试
+            finalizePending((m) => ({
+              ...m,
+              id: salvaged.last.id,
+              content: salvaged.last.content,
+              parts: salvaged.parts,
+            }));
+            set({ artifacts: sortArtifacts(salvaged.artifacts ?? []) });
+            streamError = null;
+            break;
+          }
+          if (attempt < MAX_STREAM_ATTEMPTS) {
+            // 清空 pending 消息的半成品 parts，短暂退避后自动重试
+            patchPending((m) => ({ ...m, parts: [], content: "" }));
+            await new Promise((r) => setTimeout(r, 1200 * attempt));
+          }
+        }
+      }
+      if (streamError !== null) {
+        if (streamError instanceof StreamAbortedError) {
           // 页面隐藏/切 tab/关 preview 触发的 abort：不写"已停止生成"，让用户无感
           const silent = document.visibilityState === "hidden";
           if (!silent) {
@@ -782,13 +840,12 @@ export const useStore = create<FeverState>((set, get) => {
           finalizePending((m) => ({
             ...m,
             error: true,
-            errorMessage: `请求失败：${e instanceof Error ? e.message : String(e)}`,
+            errorMessage: `请求失败：${streamError instanceof Error ? streamError.message : String(streamError)}`,
           }));
         }
-      } finally {
-        abortCtl = null;
-        currentCtx = null;
       }
+      abortCtl = null;
+      currentCtx = null;
     },
 
     stop: () => {
