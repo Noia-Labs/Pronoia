@@ -21,7 +21,7 @@ load_dotenv(_BACKEND_DIR / ".env", override=True)
 # 默认 LLM 服务商（OpenAI 兼容接口，可换成任意 OpenAI 兼容端点）
 LLM_API_URL: str = os.getenv("LLM_API_URL", "")
 LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
-LLM_MODEL: str = os.getenv("LLM_MODEL", "deepseek-v4-flash")
+LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
 
 MAAS_API_URL: str = os.getenv("MAAS_API_URL", "")
 MAAS_API_KEY: str = os.getenv("MAAS_API_KEY", "")
@@ -41,7 +41,7 @@ def resolve_llm() -> tuple[str, str, str]:
         if u_is_url and (not k_is_url) and maas_model:
             return (maas_url.rstrip("/"), maas_key, maas_model)
     # fallback 默认 LLM 服务商
-    return (str(LLM_API_URL or "").rstrip("/"), str(LLM_API_KEY or ""), str(LLM_MODEL or "deepseek-v4-flash"))
+    return (str(LLM_API_URL or "").rstrip("/"), str(LLM_API_KEY or ""), str(LLM_MODEL or "gpt-4o-mini"))
 
 LLM_BASE_URL, LLM_API_KEY, LLM_MODEL = resolve_llm()
 

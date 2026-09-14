@@ -263,11 +263,11 @@ collect_interactive_configuration() {
   default_url="$(read_env_value LLM_API_URL 2>/dev/null || true)"
   default_model="$(read_env_value LLM_MODEL 2>/dev/null || true)"
   valid_api_url "$default_url" || default_url=''
-  valid_model "$default_model" || default_model='deepseek-v4-flash'
+  valid_model "$default_model" || default_model='gpt-4o-mini'
 
   printf '\n%b\n' "${BOLD}Pronoia · 首次模型 API 配置${RESET}"
   printf '%s\n' '────────────────────────────────'
-  printf '%s\n' '可填写 DeepSeek、火山方舟等模型服务的兼容接口；配置仅保存在这台电脑，不会打进分享包。'
+  printf '%s\n' '可填写 OpenAI、DeepSeek、火山方舟等模型服务的兼容接口；配置仅保存在这台电脑，不会打进分享包。'
 
   while :; do
     printf '\n模型 API URL [%s]：' "$default_url"
