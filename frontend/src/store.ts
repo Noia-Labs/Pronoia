@@ -560,8 +560,10 @@ async function pollUntilComplete(
       if (!prev || prev.role !== "user" || prev.content !== question) { await sleep(POLL_MS); continue; }
       const content = (last.content ?? "").trim();
       const key = `${content.length}:${traceLen(last.tool_trace)}`;
-      if (content && onProgress) {
-        // 把已落库的 tool_trace/正文实时映射到 UI，让用户看到生成仍在推进
+      if (onProgress) {
+        // 无论正文是否已流出，都把已落库的 tool_trace/正文实时映射到 UI。
+        // 生成尚在 thinking/调工具阶段时 content 为空，但 tool_trace 在增长，
+        // 必须同步到界面，否则断流后用户会看到"卡住"的假死状态。
         onProgress(partsFromHistory(last), last.content ?? "");
       }
       if (key === lastKey) {
@@ -879,7 +881,20 @@ export const useStore = create<FeverState>((set, get) => {
         if (e instanceof StreamAbortedError) {
           // 用户主动停止 / 页面隐藏：不做轮询挽回
         } else {
-          // 断流：后端 detached 生成仍在跑，改为轮询订阅已落库进度
+          // 断流：后端 detached 生成仍在跑，改为轮询订阅已落库进度。
+          // 先在 UI 上明确提示，避免用户在无反馈期间误以为卡死。
+          patchPending((m) => ({
+            ...m,
+            parts: [
+              ...(m.parts ?? []),
+              {
+                type: "agent_step",
+                phase: "reconnecting",
+                agent: "system",
+                note: "连接中断，正在从服务器同步生成进度（生成在后台继续，不会丢失）…",
+              } as Part,
+            ],
+          }));
           const polled = await pollUntilComplete(
             caseId,
             content,
