@@ -164,7 +164,7 @@ export default function QuestionLibraryPanel() {
 
   return <section className="mt-4">
     <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-      <div><h2 className="font-serif text-[17px] font-semibold text-ink">问题库</h2><p className="mt-1 text-[10.5px] leading-relaxed text-mute">浏览 fevertest 迁入的研究问题，按场景选题，也可以整理自己的评测题库。</p></div>
+      <div><h2 className="font-serif text-[17px] font-semibold text-ink">问题库</h2><p className="mt-1 text-[10.5px] leading-relaxed text-mute">浏览 pronoiatest 迁入的研究问题，按场景选题，也可以整理自己的评测题库。</p></div>
       <div className="flex gap-2"><button type="button" className={BUTTON} onClick={() => void load()} disabled={loading || saving}><RefreshCw size={12} className={cls(loading && "animate-spin")} />刷新题库</button><button type="button" className={BUTTON} onClick={() => openEditor("custom")} disabled={saving}><Plus size={12} />新建问题</button></div>
     </div>
     {notice && <div role="status" className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-jade/20 bg-jade-soft px-4 py-3 text-[11px] text-jade"><span className="inline-flex items-center gap-2"><Check size={13} />{notice}</span><button aria-label="关闭提示" type="button" onClick={() => setNotice(null)}><X size={12} /></button></div>}

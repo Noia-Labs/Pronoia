@@ -12,8 +12,8 @@ services:
       - .env.share
     environment:
       PORT: "${PORT:-8000}"
-      FEVER_DB_PATH: /var/lib/pronoia/fever.db
-      FEVER_DATA_DIR: /var/lib/pronoia/data
+      PRONOIA_DB_PATH: /var/lib/pronoia/pronoia.db
+      PRONOIA_DATA_DIR: /var/lib/pronoia/data
       PRONOIA_SHARE_MODE: "1"
       PRONOIA_SHARE_USER: "${PRONOIA_SHARE_USER:?set PRONOIA_SHARE_USER in .env.share}"
       PRONOIA_SHARE_PASSWORD: "${PRONOIA_SHARE_PASSWORD:?set PRONOIA_SHARE_PASSWORD in .env.share}"

@@ -1,4 +1,4 @@
-"""诊断 config 是否能正确加载 ARK 密钥"""
+"""诊断 config 是否能正确加载 LLM 密钥"""
 import sys, os
 from pathlib import Path
 
@@ -16,7 +16,7 @@ print("project .env exists:", env_file.exists())
 if env_file.exists():
     for line in open(env_file):
         line=line.strip()
-        if line.startswith('ARK_API') or line.startswith('MAAS_') or line.startswith('OPENAI'):
+        if line.startswith('LLM_API') or line.startswith('MAAS_') or line.startswith('OPENAI'):
             k,v=line.split('=',1) if '=' in line else (line,'')
             print(f"  {k} = {v[:8]}... len={len(v)}")
 

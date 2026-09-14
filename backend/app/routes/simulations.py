@@ -1,4 +1,4 @@
-"""Asynchronous scenario simulation routes backed by FEVER-MiroFish gateway."""
+"""Asynchronous scenario simulation routes backed by PRONOIA-MiroFish gateway."""
 from __future__ import annotations
 
 import threading
@@ -70,7 +70,7 @@ def _build_gateway_payload(
 
 def _sync(job: dict[str, Any]) -> dict[str, Any]:
     # Multiple tabs may poll together. Serialize the terminal write so one
-    # gateway result creates exactly one FEVER artifact.
+    # gateway result creates exactly one PRONOIA artifact.
     with _sync_lock:
         job = db.get_simulation_job(job["id"]) or job
         if job["status"] in TERMINAL and (job["status"] != "completed" or job.get("artifact_id")):

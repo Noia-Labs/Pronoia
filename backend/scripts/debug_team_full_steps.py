@@ -20,8 +20,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 
-os.environ.setdefault("FEVER_BT_FAST", "1")
-os.environ.setdefault("FEVER_BT_STRICT_AS_OF", "1")
+os.environ.setdefault("PRONOIA_BT_FAST", "1")
+os.environ.setdefault("PRONOIA_BT_STRICT_AS_OF", "1")
 os.environ.setdefault("TQDM_DISABLE", "1")
 
 from app import config  # noqa: E402

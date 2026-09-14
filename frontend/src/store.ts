@@ -23,8 +23,8 @@ import { uid } from "./utils";
 
 /* ---------------- logic library 持久化 ---------------- */
 
-const LOGIC_KEY = "fever.logic_library.v1";
-const UI_KEY = "fever.ui.v1";
+const LOGIC_KEY = "pronoia.logic_library.v1";
+const UI_KEY = "pronoia.ui.v1";
 
 interface UIPrefs {
   rightOpen?: boolean;

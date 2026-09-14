@@ -6,7 +6,7 @@ FAST 模式（market_analyst + fundamentals_analyst + deep_researcher，跳过 h
 
 用法：
     cd /workspace/backend
-    FEVER_BT_FAST=1 python3 /workspace/backtesting/rlvr/scripts/probe_team_v2.py
+    PRONOIA_BT_FAST=1 python3 /workspace/backtesting/rlvr/scripts/probe_team_v2.py
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ PROBE_EVENT_IDS = [
 
 
 async def main() -> None:
-    os.environ["FEVER_BT_FAST"] = "1"  # 前置 Agent 白名单 + 跳过 hypothesis/verify
+    os.environ["PRONOIA_BT_FAST"] = "1"  # 前置 Agent 白名单 + 跳过 hypothesis/verify
 
     from app.event_backtest.engine import run_team_full_one_event
     from app.event_backtest.models import EventRecord

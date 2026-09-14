@@ -1,7 +1,7 @@
 """一次性生成 5 个小规模真实感数据集（各 10 events），并注册到 bt_datasets。
 
 用法：
-  /Users/vix/Code/FEVER/.venv/bin/python scripts/generate_datasets.py
+  /Users/vix/Code/PRONOIA/.venv/bin/python scripts/generate_datasets.py
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from collections import Counter
 from pathlib import Path
 
 # 让 app 包可 import
-BACKEND_DIR = "/Users/vix/Code/FEVER/backend"
+BACKEND_DIR = "/Users/vix/Code/PRONOIA/backend"
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
@@ -19,7 +19,7 @@ from app import db  # noqa: E402
 from app.event_backtest.application import load_events  # noqa: E402
 from app.event_backtest.engine import validate_events  # noqa: E402
 
-ROOT = Path("/Users/vix/Code/FEVER")
+ROOT = Path("/Users/vix/Code/PRONOIA")
 DS_DIR = ROOT / "data" / "datasets"
 DS_DIR.mkdir(parents=True, exist_ok=True)
 

@@ -1,5 +1,5 @@
 import os, time, asyncio
-os.environ.setdefault("FEVER_BT_FAST", "0")
+os.environ.setdefault("PRONOIA_BT_FAST", "0")
 from app import config
 from openai import AsyncOpenAI
 

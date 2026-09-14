@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 class TestExternalSecretPolicy(unittest.TestCase):
     RESERVED_PROCESS_ENV = (
-        "ARK_API_KEY",
+        "LLM_API_KEY",
         "MAAS_API_KEY",
         "PRONOIA_SHARE_PASSWORD",
         "PATH",
@@ -82,11 +82,11 @@ class TestExternalSecretPolicy(unittest.TestCase):
         from app.event_backtest.external_strategy import _headers
 
         with patch.dict(os.environ, {
-            "ARK_API_KEY": "must-not-leak",
+            "LLM_API_KEY": "must-not-leak",
             "PRONOIA_STRATEGY_SECRET_VENDOR": "allowed-secret",
         }, clear=False):
             with self.assertRaisesRegex(ValueError, "PRONOIA_STRATEGY_SECRET_"):
-                _headers({"headers": {"Authorization": "env:ARK_API_KEY"}})
+                _headers({"headers": {"Authorization": "env:LLM_API_KEY"}})
             resolved = _headers({
                 "headers": {"Authorization": "env:PRONOIA_STRATEGY_SECRET_VENDOR"},
             })

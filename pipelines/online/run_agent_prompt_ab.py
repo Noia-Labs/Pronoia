@@ -767,7 +767,7 @@ def _aggregate(rows: list[dict[str, Any]], labels: dict[str, dict[str, Any]]) ->
 
 
 async def async_main(args: argparse.Namespace) -> int:
-    os.environ["FEVER_BT_STRICT_AS_OF"] = "1"
+    os.environ["PRONOIA_BT_STRICT_AS_OF"] = "1"
     events = _jsonl(Path(args.events))[: args.limit]
     labels = {row["event_id"]: row for row in _jsonl(Path(args.labels))} if args.labels else {}
     out = Path(args.out_dir)

@@ -626,7 +626,7 @@ async def run_team_full_one_event(
     )
 
     import os as _os
-    FAST = _os.environ.get("FEVER_BT_FAST", "").strip() in ("1", "true", "yes")
+    FAST = _os.environ.get("PRONOIA_BT_FAST", "").strip() in ("1", "true", "yes")
 
     state = {"content": "", "tool_trace": [], "hypotheses": []}
     t0 = dt.datetime.now()

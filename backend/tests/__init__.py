@@ -1,1 +1,1 @@
-"""FEVER backend regression tests."""
+"""PRONOIA backend regression tests."""

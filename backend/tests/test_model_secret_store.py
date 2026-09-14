@@ -172,7 +172,7 @@ def test_existing_environment_references_still_work_without_creating_store(secre
 
 
 @pytest.mark.parametrize("reference", [
-    "", "ARK_API_KEY", "PATH", "PRONOIA_MODEL_SECRET_", "PRONOIA_MODEL_SECRET_lowercase",
+    "", "LLM_API_KEY", "PATH", "PRONOIA_MODEL_SECRET_", "PRONOIA_MODEL_SECRET_lowercase",
     "PRONOIA_STRATEGY_SECRET_VENDOR", "env:PRONOIA_MODEL_SECRET_VENDOR",
     "local-model:../.key", "local-model:" + "a" * 31,
     "local-model:" + "A" * 32, "local-model:" + "a" * 32 + "/../.key",

@@ -32,7 +32,7 @@ _profile_clients: dict[tuple[str, str, str, float, str, int, int], AsyncOpenAI] 
 def _skill_timeout(name: str, category: str, depth: int) -> float:
     """Choose a deadline that leaves the calling composite time to aggregate.
 
-    Root calls preserve the historical FEVER_SKILL_TIMEOUT.  Nested composite
+    Root calls preserve the historical PRONOIA_SKILL_TIMEOUT.  Nested composite
     skills get a near-root budget, ordinary atomic calls get a shorter budget,
     and known multi-provider atomics such as event_study get a small extension.
     """
@@ -273,7 +273,7 @@ async def execute_skill(name: str, args: dict) -> dict:
     - async handler: 直接 await（skill 内部 await sub-tool）
     - sync handler:  to_thread 跑（保持原行为）
 
-    P0 未来函数防护（STRICT AS-OF）：当 FEVER_BT_STRICT_AS_OF=1 时，
+    P0 未来函数防护（STRICT AS-OF）：当 PRONOIA_BT_STRICT_AS_OF=1 时，
     对 event_study_skill / event_study 强制注入 as_of=True + 正确 benchmark，
     防止 LLM 因 prompt 遗漏而暴露 post-event CAR。
 
@@ -281,7 +281,7 @@ async def execute_skill(name: str, args: dict) -> dict:
     """
     import os as _os
     _t0 = time.time()
-    strict_as_of = _os.environ.get("FEVER_BT_STRICT_AS_OF", "").strip() in ("1", "true", "yes")
+    strict_as_of = _os.environ.get("PRONOIA_BT_STRICT_AS_OF", "").strip() in ("1", "true", "yes")
     if strict_as_of:
         args = dict(args or {})
         if name == "event_study_skill":
