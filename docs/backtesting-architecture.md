@@ -68,7 +68,7 @@ Arena 保持为独立的跨 Run 比较入口。五个回测页面共享数据版
 问答默认关闭。开启时显式选择题库、问题、回答模型、Raw API / Pronoia 路径、重复次数和评分方式。
 自定义决策 HTTP endpoint 不代表具备聊天能力；问答使用独立、支持聊天的候选连接。
 创建接口 `POST /api/bt/event-experiments` 负责关联预测 Run 与独立问答批次，支持保存或开始测试。
-问答沿用 fevertest 的八维 100 分量表、原始模型与 Pronoia 回答对照、独立大模型裁判或人工复核。
+问答沿用 pronoiatest 的八维 100 分量表、原始模型与 Pronoia 回答对照、独立大模型裁判或人工复核。
 
 详情通过 `GET /api/model-lab/backtest-runs/{run_id}/results` 读取关联结果，也兼容已有 Model Lab 预测 Run。
 预测结束不停止问答状态更新；完整回答、冻结题干、评分依据和人工评分保存在独立的结果面板。

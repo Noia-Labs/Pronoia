@@ -19,15 +19,15 @@ class TestUnifiedMarketBacktest(unittest.TestCase):
         from app import config, db
 
         cls._config_db, cls._config_data = config.DB_PATH, config.DATA_DIR
-        cls._old_db = os.environ.get("FEVER_DB_PATH")
-        cls._old_data = os.environ.get("FEVER_DATA_DIR")
-        os.environ["FEVER_DB_PATH"] = str(cls.root / "market.db")
-        os.environ["FEVER_DATA_DIR"] = str(cls.root / "data")
+        cls._old_db = os.environ.get("PRONOIA_DB_PATH")
+        cls._old_data = os.environ.get("PRONOIA_DATA_DIR")
+        os.environ["PRONOIA_DB_PATH"] = str(cls.root / "market.db")
+        os.environ["PRONOIA_DATA_DIR"] = str(cls.root / "data")
         from app.routes import backtest
 
-        config.DB_PATH = os.environ["FEVER_DB_PATH"]
-        config.DATA_DIR = os.environ["FEVER_DATA_DIR"]
-        backtest.DATA_DIR = os.environ["FEVER_DATA_DIR"]
+        config.DB_PATH = os.environ["PRONOIA_DB_PATH"]
+        config.DATA_DIR = os.environ["PRONOIA_DATA_DIR"]
+        backtest.DATA_DIR = os.environ["PRONOIA_DATA_DIR"]
         db._conn = None
         db.init_db()
         cls.csv_path = cls.root / "bars.csv"
@@ -58,13 +58,13 @@ class TestUnifiedMarketBacktest(unittest.TestCase):
         config.DB_PATH, config.DATA_DIR = cls._config_db, cls._config_data
         backtest.DATA_DIR = cls._config_data
         if cls._old_db is None:
-            os.environ.pop("FEVER_DB_PATH", None)
+            os.environ.pop("PRONOIA_DB_PATH", None)
         else:
-            os.environ["FEVER_DB_PATH"] = cls._old_db
+            os.environ["PRONOIA_DB_PATH"] = cls._old_db
         if cls._old_data is None:
-            os.environ.pop("FEVER_DATA_DIR", None)
+            os.environ.pop("PRONOIA_DATA_DIR", None)
         else:
-            os.environ["FEVER_DATA_DIR"] = cls._old_data
+            os.environ["PRONOIA_DATA_DIR"] = cls._old_data
         cls._temp.cleanup()
 
     def test_01_pending_source_is_honest_and_market_snapshot_is_versioned(self):

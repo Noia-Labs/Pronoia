@@ -179,6 +179,6 @@ def cache_clear():
 
 @router.post("/cache/toggle")
 def cache_toggle(disabled: bool = Query(False, description="True=禁用缓存，False=启用")):
-    """运行时切换缓存开关（仅供调试）。环境变量 FEVER_CACHE_DISABLE 也可在启动时禁用。"""
+    """运行时切换缓存开关（仅供调试）。环境变量 PRONOIA_CACHE_DISABLE 也可在启动时禁用。"""
     set_cache_disabled(disabled)
     return {"disabled": disabled}

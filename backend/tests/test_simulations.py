@@ -17,7 +17,7 @@ class SimulationRoutesTests(unittest.TestCase):
         if db._conn is not None:
             db._conn.close()
             db._conn = None
-        config.DB_PATH = str(Path(self.temporary.name) / "fever.db")
+        config.DB_PATH = str(Path(self.temporary.name) / "pronoia.db")
         db.init_db()
         self.case = db.create_case("simulation route test")
         self.graph = db.add_artifact(

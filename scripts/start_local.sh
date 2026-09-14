@@ -2,7 +2,7 @@
 # Pronoia 本机启动脚本（自定义端口版，避开常用的 8000/5173）
 #
 # 与根目录 ./start.sh（前台运行、固定 8000/5173）的区别：
-#   - 后端/前端端口默认 27531 / 27532，可用环境变量 FEVER_BACKEND_PORT / FEVER_FRONTEND_PORT 覆盖
+#   - 后端/前端端口默认 27531 / 27532，可用环境变量 PRONOIA_BACKEND_PORT / PRONOIA_FRONTEND_PORT 覆盖
 #   - setsid 后台运行（脱离启动会话的进程组，终端关闭/会话超时不连带杀服务），日志写入 .run/（沿用 scripts/dev.sh 的约定）
 #   - 以「端口是否有监听」为运行状态的唯一真相；pid 文件只作记录展示（setsid 会 fork，启动时的 $! 不可靠）
 #   - 端口被未知进程占用时直接报错退出，绝不误杀共享机器上的其他服务
@@ -17,8 +17,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VENV_PY="$ROOT/backend/.venv/bin/python"
 LOG_DIR="$ROOT/.run"
-BACKEND_PORT="${FEVER_BACKEND_PORT:-27531}"
-FRONTEND_PORT="${FEVER_FRONTEND_PORT:-27532}"
+BACKEND_PORT="${PRONOIA_BACKEND_PORT:-27531}"
+FRONTEND_PORT="${PRONOIA_FRONTEND_PORT:-27532}"
 BACKEND_URL="http://127.0.0.1:$BACKEND_PORT"
 FRONTEND_URL="http://127.0.0.1:$FRONTEND_PORT"
 
@@ -65,7 +65,7 @@ do_start() {
     local name="${pair%%:*}" port="${pair##*:}"
     if port_busy "$port"; then
       echo "[start_local] 错误: 端口 $port 已被进程 $(port_pids "$port") 占用。"
-      echo "  若是本脚本启动的残留: 先 $0 stop；若是其他服务: 换端口 FEVER_${name^^}_PORT=<port> $0"
+      echo "  若是本脚本启动的残留: 先 $0 stop；若是其他服务: 换端口 PRONOIA_${name^^}_PORT=<port> $0"
       exit 1
     fi
   done
@@ -75,7 +75,7 @@ do_start() {
     > "$LOG_DIR/backend.log" 2>&1 < /dev/null &)
 
   echo "[start_local] 启动前端 vite :$FRONTEND_PORT"
-  (cd "$ROOT/frontend" && FEVER_BACKEND_PORT="$BACKEND_PORT" FEVER_FRONTEND_PORT="$FRONTEND_PORT" \
+  (cd "$ROOT/frontend" && PRONOIA_BACKEND_PORT="$BACKEND_PORT" PRONOIA_FRONTEND_PORT="$FRONTEND_PORT" \
     setsid npm run dev -- --host 127.0.0.1 --port "$FRONTEND_PORT" --strictPort \
     > "$LOG_DIR/frontend.log" 2>&1 < /dev/null &)
 

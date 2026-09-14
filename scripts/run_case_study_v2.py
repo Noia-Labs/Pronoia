@@ -1,7 +1,7 @@
 """Run case_study_v2 19 条：走 team_full 新管线，落盘 preds + trajectory ckpt。
 
 用法：
-  cd FEVER
+  cd PRONOIA
   PYTHONPATH=$(pwd)/backend backend/.venv/bin/python scripts/run_case_study_v2.py
 """
 from __future__ import annotations

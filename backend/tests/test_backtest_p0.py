@@ -14,14 +14,14 @@ class TestBacktestP0(unittest.TestCase):
         # 隔离测试环境：临时 DB + DATA_DIR
         cls._td = tempfile.TemporaryDirectory()
         cls.tmp = Path(cls._td.name)
-        cls._old_env_db = os.environ.get("FEVER_DB_PATH")
-        cls._old_env_data = os.environ.get("FEVER_DATA_DIR")
-        os.environ["FEVER_DB_PATH"] = str(cls.tmp / "fever_test.db")
-        os.environ["FEVER_DATA_DIR"] = str(cls.tmp / "data")
+        cls._old_env_db = os.environ.get("PRONOIA_DB_PATH")
+        cls._old_env_data = os.environ.get("PRONOIA_DATA_DIR")
+        os.environ["PRONOIA_DB_PATH"] = str(cls.tmp / "pronoia_test.db")
+        os.environ["PRONOIA_DATA_DIR"] = str(cls.tmp / "data")
         (cls.tmp / "data").mkdir(exist_ok=True)
         # pytest 会在 setUpClass 之前收集/导入其他模块，所以仅修改环境
         # 变量不足以改变已加载的 config.DB_PATH。显式替换运行时配置，
-        # 避免单独或全量运行测试时污染用户的 fever.db。
+        # 避免单独或全量运行测试时污染用户的 pronoia.db。
         import app.config as _config
         import app.db as _db
         from app.routes import backtest as _backtest
@@ -32,9 +32,9 @@ class TestBacktestP0(unittest.TestCase):
         if _db._conn is not None:
             _db._conn.close()
         _db._conn = None
-        _config.DB_PATH = os.environ["FEVER_DB_PATH"]
-        _config.DATA_DIR = os.environ["FEVER_DATA_DIR"]
-        _backtest.DATA_DIR = os.environ["FEVER_DATA_DIR"]
+        _config.DB_PATH = os.environ["PRONOIA_DB_PATH"]
+        _config.DATA_DIR = os.environ["PRONOIA_DATA_DIR"]
+        _backtest.DATA_DIR = os.environ["PRONOIA_DATA_DIR"]
         _db.init_db()
         cls.events_path = cls._make_fixture_events(cls.tmp / "events.jsonl")
         cls.labels_path = cls._make_fixture_labels(cls.tmp / "labels.jsonl")
@@ -53,13 +53,13 @@ class TestBacktestP0(unittest.TestCase):
         _config.DATA_DIR = cls._old_config_data
         _backtest.DATA_DIR = cls._old_route_data
         if cls._old_env_db is None:
-            os.environ.pop("FEVER_DB_PATH", None)
+            os.environ.pop("PRONOIA_DB_PATH", None)
         else:
-            os.environ["FEVER_DB_PATH"] = cls._old_env_db
+            os.environ["PRONOIA_DB_PATH"] = cls._old_env_db
         if cls._old_env_data is None:
-            os.environ.pop("FEVER_DATA_DIR", None)
+            os.environ.pop("PRONOIA_DATA_DIR", None)
         else:
-            os.environ["FEVER_DATA_DIR"] = cls._old_env_data
+            os.environ["PRONOIA_DATA_DIR"] = cls._old_env_data
         cls._td.cleanup()
 
     @staticmethod

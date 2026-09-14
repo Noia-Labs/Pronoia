@@ -82,14 +82,14 @@ export function isFeverSyntheticSourceUrl(url: string): boolean {
   if (!url) return false;
   // 用户手工录入事件没有外部网页；manual:// 仅作为可追溯的内部来源标识。
   if (url.startsWith("manual://")) return true;
-  const FEVER_DATASET_IDS = [
+  const PRONOIA_DATASET_IDS = [
     "cn_earnings_q2",
     "cn_insiders",
     "cn_policy",
     "us_earnings_q2",
     "hk_ratings",
   ];
-  const eventIdLike = new RegExp(`(?:${FEVER_DATASET_IDS.join("|")})-\\d{2,4}`);
+  const eventIdLike = new RegExp(`(?:${PRONOIA_DATASET_IDS.join("|")})-\\d{2,4}`);
   if (eventIdLike.test(url)) return true;
 
   try {
@@ -99,15 +99,15 @@ export function isFeverSyntheticSourceUrl(url: string): boolean {
     const path = u.pathname || "";
     if (host.endsWith("cninfo.com.cn") && /announcementId=ann\d+h\d?_/.test(search)) return true;
     if (host.endsWith("cninfo.com.cn") && /announcementId=ann_insider_/.test(search)) return true;
-    if (host.endsWith("sec.gov") && /-fever-/.test(path + search)) return true;
-    if (host.endsWith("hkexnews.hk") && /fever_/.test(path + search)) return true;
+    if (host.endsWith("sec.gov") && /-pronoia-/.test(path + search)) return true;
+    if (host.endsWith("hkexnews.hk") && /pronoia_/.test(path + search)) return true;
     if (
       (host.endsWith("gov.cn") || host.endsWith("caixin.com") || host.endsWith("mofcom.gov.cn") || host.endsWith("pbc.gov.cn") || host.endsWith("csrc.gov.cn")) &&
-      /(docid|fid|refid|id)=fever_/.test(search)
+      /(docid|fid|refid|id)=pronoia_/.test(search)
     ) {
       return true;
     }
-    if (/(fever_|_fever_)/.test(url) && !host.includes("127.0.0.1") && !host.includes("localhost")) return true;
+    if (/(pronoia_|_pronoia_)/.test(url) && !host.includes("127.0.0.1") && !host.includes("localhost")) return true;
     return false;
   } catch {
     return false;

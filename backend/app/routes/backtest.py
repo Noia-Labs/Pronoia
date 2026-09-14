@@ -198,7 +198,7 @@ def _resolve_path(raw: str | None) -> str | None:
             status_code=403,
             detail={
                 "message": "分享模式不允许访问受管数据或公开种子目录之外的本机路径",
-                "hint": "请先将数据导入 FEVER_DATA_DIR、backtesting 或 seed_data，再通过 dataset_id 引用。",
+                "hint": "请先将数据导入 PRONOIA_DATA_DIR、backtesting 或 seed_data，再通过 dataset_id 引用。",
             },
         )
     return str(resolved)
@@ -1990,9 +1990,9 @@ def start_run(run_id: str) -> Any:
             status_code=409,
             detail={"message": "Run 的冻结数据或执行协议已失效", "reason": frozen_error},
         )
-    # P0 严格默认启用 as_of 防作弊（与 CLI 的 FEVER_BT_STRICT_AS_OF=1 一致）
+    # P0 严格默认启用 as_of 防作弊（与 CLI 的 PRONOIA_BT_STRICT_AS_OF=1 一致）
     import os
-    os.environ.setdefault("FEVER_BT_STRICT_AS_OF", "1")
+    os.environ.setdefault("PRONOIA_BT_STRICT_AS_OF", "1")
     from ..model_lab.repository import mark_event_launch_intent
     mark_event_launch_intent(run_id)
     res = orch.start_bt_run(run_id)
@@ -2033,9 +2033,9 @@ def resume_run(run_id: str) -> Any:
     run = db.get_bt_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="run not found")
-    # P0 严格默认启用 as_of 防作弊（与 CLI 的 FEVER_BT_STRICT_AS_OF=1 一致）
+    # P0 严格默认启用 as_of 防作弊（与 CLI 的 PRONOIA_BT_STRICT_AS_OF=1 一致）
     import os
-    os.environ.setdefault("FEVER_BT_STRICT_AS_OF", "1")
+    os.environ.setdefault("PRONOIA_BT_STRICT_AS_OF", "1")
     ok, msg = orch.resume_bt_run(run_id)
     if not ok:
         raise HTTPException(status_code=409, detail=msg)

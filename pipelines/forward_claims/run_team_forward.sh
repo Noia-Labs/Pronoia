@@ -8,7 +8,7 @@ set -a
 source "$ROOT/.env"
 set +a
 
-export FEVER_BT_FAST=1   # 3 专家白名单 + 跳过 hypothesis/verify
+export PRONOIA_BT_FAST=1   # 3 专家白名单 + 跳过 hypothesis/verify
 export PYTHONPATH="$ROOT/backend:$ROOT:${PYTHONPATH:-}"
 
 PY="${PYTHON:-python3}"

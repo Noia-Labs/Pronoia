@@ -592,7 +592,7 @@ def cmd_case_study(args: argparse.Namespace) -> int:
         printed += 1
 
     P(SEP)
-    P("  🧭 Case 横向总结（走 FEVER 正式 CLI 输出）")
+    P("  🧭 Case 横向总结（走 PRONOIA 正式 CLI 输出）")
     P(SEP)
     P()
     P("   1) US 类 ~30% 权重：不套 CN 八条本土先验，按 packet 原文关键词判别 → prompt-only 已达 79.07%（95% CI 64.8–88.6）。")

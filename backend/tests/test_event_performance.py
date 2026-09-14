@@ -14,18 +14,18 @@ class TestEventPerformance(unittest.TestCase):
     def setUpClass(cls):
         cls._temp = tempfile.TemporaryDirectory()
         cls.root = Path(cls._temp.name)
-        cls._old_env_db = os.environ.get("FEVER_DB_PATH")
-        cls._old_env_data = os.environ.get("FEVER_DATA_DIR")
-        os.environ["FEVER_DB_PATH"] = str(cls.root / "performance.db")
-        os.environ["FEVER_DATA_DIR"] = str(cls.root / "data")
+        cls._old_env_db = os.environ.get("PRONOIA_DB_PATH")
+        cls._old_env_data = os.environ.get("PRONOIA_DATA_DIR")
+        os.environ["PRONOIA_DB_PATH"] = str(cls.root / "performance.db")
+        os.environ["PRONOIA_DATA_DIR"] = str(cls.root / "data")
         from app import config, db
         from app.routes import backtest
 
         cls._old_config_db = config.DB_PATH
         cls._old_config_data = config.DATA_DIR
-        config.DB_PATH = os.environ["FEVER_DB_PATH"]
-        config.DATA_DIR = os.environ["FEVER_DATA_DIR"]
-        backtest.DATA_DIR = os.environ["FEVER_DATA_DIR"]
+        config.DB_PATH = os.environ["PRONOIA_DB_PATH"]
+        config.DATA_DIR = os.environ["PRONOIA_DATA_DIR"]
+        backtest.DATA_DIR = os.environ["PRONOIA_DATA_DIR"]
         db._conn = None
         db.init_db()
 
@@ -41,13 +41,13 @@ class TestEventPerformance(unittest.TestCase):
         config.DATA_DIR = cls._old_config_data
         backtest.DATA_DIR = cls._old_config_data
         if cls._old_env_db is None:
-            os.environ.pop("FEVER_DB_PATH", None)
+            os.environ.pop("PRONOIA_DB_PATH", None)
         else:
-            os.environ["FEVER_DB_PATH"] = cls._old_env_db
+            os.environ["PRONOIA_DB_PATH"] = cls._old_env_db
         if cls._old_env_data is None:
-            os.environ.pop("FEVER_DATA_DIR", None)
+            os.environ.pop("PRONOIA_DATA_DIR", None)
         else:
-            os.environ["FEVER_DATA_DIR"] = cls._old_env_data
+            os.environ["PRONOIA_DATA_DIR"] = cls._old_env_data
         cls._temp.cleanup()
 
     def _write_jsonl(self, name: str, rows: list[dict]) -> Path:

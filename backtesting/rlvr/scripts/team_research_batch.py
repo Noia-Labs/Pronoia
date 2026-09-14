@@ -107,7 +107,7 @@ async def main() -> None:
     ap.add_argument("--only-ids", default="", help="逗号分隔 event_id 白名单（调试用）")
     args = ap.parse_args()
 
-    os.environ["FEVER_BT_FAST"] = "1"  # 3 专家白名单 + 跳过 hypothesis/verify
+    os.environ["PRONOIA_BT_FAST"] = "1"  # 3 专家白名单 + 跳过 hypothesis/verify
 
     from app.event_backtest import engine as engine_mod
     from app.event_backtest import models as models_mod

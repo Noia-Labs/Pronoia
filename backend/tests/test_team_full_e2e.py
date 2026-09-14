@@ -26,8 +26,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# 屏蔽 FEVER_BT_STRICT_ASOF 等环境变量影响
-os.environ.setdefault("FEVER_BT_FAST", "1")
+# 屏蔽 PRONOIA_BT_STRICT_ASOF 等环境变量影响
+os.environ.setdefault("PRONOIA_BT_FAST", "1")
 
 # 关键：触发 analyzers.py 模块加载，让 @skill decorator 把 6 个新 skill 注册到 REGISTRY。
 # 否则 _route_signals 调用 REGISTRY["announcement_classifier"] 会找不到 handler，信号全空 → 返回 None。
