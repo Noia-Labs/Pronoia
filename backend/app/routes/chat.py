@@ -284,16 +284,39 @@ async def _chat_stream_pinned(req: ChatRequest) -> AsyncIterator[str]:
             pass
 
 
+_SSE_HEARTBEAT_SECONDS = 4.0
+
+
 async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
-    """Keep endpoint, credential and model id consistent for one chat turn."""
+    """Keep endpoint, credential and model id consistent for one chat turn.
+
+    外层再包一层心跳：内部阶段（如路由器非流式 LLM_JSON 调用）可能长时间
+    不产出事件，中间代理（沙箱预览代理等）会在 ~15s 空闲后掐断连接，浏览器
+    表现为 "network error"。静默超过 4s 时发送 SSE 注释帧 `: ping` 保活，
+    前端解析器只认 `data:` 行，注释帧会被自动忽略。
+    """
 
     target = resolve_runtime_target()
     with runtime_target_context(target):
         stream = _chat_stream_pinned(req)
+        pending: "asyncio.Task[str] | None" = None
         try:
-            async for event in stream:
+            while True:
+                if pending is None:
+                    pending = asyncio.ensure_future(stream.__anext__())
+                done, _ = await asyncio.wait({pending}, timeout=_SSE_HEARTBEAT_SECONDS)
+                if not done:
+                    yield ": ping\n\n"
+                    continue
+                task, pending = pending, None
+                try:
+                    event = task.result()
+                except StopAsyncIteration:
+                    break
                 yield event
         finally:
+            if pending is not None:
+                pending.cancel()
             # Explicitly close the delegated async generator so its durability
             # checkpoint finishes before callers tear down the database.
             await stream.aclose()
