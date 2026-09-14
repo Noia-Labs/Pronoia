@@ -517,6 +517,73 @@ async function salvageFromServer(caseId: string, question: string) {
   }
 }
 
+/**
+ * 断流轮询挽回：公网链路把 SSE 掐断时，后端生成是独立 Task（detached），
+ * 仍在后台继续执行并持续把 content / tool_trace 落库。此时前端不再发起
+ * 新的生成请求（避免重复生成），而是改为周期性轮询 caseDetail 取回已落库
+ * 进度，直到后端该轮生成完成（内容稳定）或超过保护窗口。
+ *
+ * 判完成条件：assistant 行已有正文，且连续 3 次轮询（content 长度 +
+ * tool_trace 长度）都不再变化。判"仍在生成"：快照仍在增长 → 继续轮询。
+ * 返回 null 表示轮询超时 / 该行不是本轮问题 → 交由上层走重试兜底。
+ */
+async function pollUntilComplete(
+  caseId: string,
+  question: string,
+  onProgress?: (parts: Part[], content: string) => void,
+  signal?: AbortSignal,
+) {
+  const POLL_MS = 1500;
+  const MAX_MS = 6 * 60 * 1000; // 保护窗口 6 分钟（team 模式可能更久）
+  const STABLE_ROUNDS = 3;
+  const start = Date.now();
+  let lastKey = "";
+  let stable = 0;
+
+  const traceLen = (t: unknown) => {
+    if (Array.isArray(t)) return t.length;
+    if (typeof t === "string" && t.trim()) {
+      try { return (JSON.parse(t) as unknown[]).length; } catch { return 0; }
+    }
+    return 0;
+  };
+
+  for (;;) {
+    if (signal?.aborted) return null;
+    if (Date.now() - start > MAX_MS) return null;
+    try {
+      const d = await api.caseDetail(caseId);
+      const msgs = d.messages ?? [];
+      const last = msgs[msgs.length - 1];
+      const prev = msgs[msgs.length - 2];
+      if (!last || last.role !== "assistant") { await sleep(POLL_MS); continue; }
+      if (!prev || prev.role !== "user" || prev.content !== question) { await sleep(POLL_MS); continue; }
+      const content = (last.content ?? "").trim();
+      const key = `${content.length}:${traceLen(last.tool_trace)}`;
+      if (content && onProgress) {
+        // 把已落库的 tool_trace/正文实时映射到 UI，让用户看到生成仍在推进
+        onProgress(partsFromHistory(last), last.content ?? "");
+      }
+      if (key === lastKey) {
+        stable++;
+        if (content && stable >= STABLE_ROUNDS) {
+          return { last, parts: partsFromHistory(last), artifacts: d.artifacts ?? [] };
+        }
+      } else {
+        stable = 0;
+        lastKey = key;
+      }
+    } catch {
+      // 单次轮询失败忽略，下一轮再试（网络抖动不应该终止整个挽回）
+    }
+    await sleep(POLL_MS);
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise<void>((r) => setTimeout(r, ms));
+}
+
 export const useStore = create<FeverState>((set, get) => {
   const prefs = loadUIPrefs();
   const initialRoute = routeFromLocation();
@@ -785,45 +852,75 @@ export const useStore = create<FeverState>((set, get) => {
       currentCtx = { caseId, messageId: asstMsg.id, question: content };
 
       // 浏览器到预览网关的公网链路可能间歇性掐断长连接（沙箱内部链路已验证
-      // 无限制）。此处做两层兜底：
-      // 1) 断流后先从服务端挽回已保存内容（后端断连时会把已产出部分落库）
-      // 2) 无可挽回内容时自动重试整个请求（最多 3 次递增退避）
-      const MAX_STREAM_ATTEMPTS = 3;
+      // 无限制）。后端生成是独立 Task（detached），断连不影响生成落库。因此
+      // 断流后的正确做法不是"重新生成"，而是"轮询已落库进度直到完成"：
+      //   1) 先 salvage 一次：若正文已落库（生成已跑完）→ 直接收尾
+      //   2) 否则 pollUntilComplete：持续轮询，把后端持续落库的进度实时映射到
+      //      UI，直到内容稳定（生成完成）→ 收尾；全程不再发新的生成请求
+      //   3) 仅当轮询也拿不到结果（生成任务异常死掉 / 超时）才兜底重试 1 次
       let streamError: unknown = null;
-      for (let attempt = 1; attempt <= MAX_STREAM_ATTEMPTS; attempt++) {
+      const attemptStream = async () => {
         abortCtl = new AbortController();
         currentCtx = { caseId, messageId: asstMsg.id, question: content };
-        try {
-          await streamChat(
-            { case_id: caseId, message: content, mode: useMode,
-              agent: useAgent,
-              team_members: useMode === "team" ? get().teamMembers : undefined },
-            { onEvent: handleEvent, signal: abortCtl.signal },
+        await streamChat(
+          { case_id: caseId, message: content, mode: useMode,
+            agent: useAgent,
+            team_members: useMode === "team" ? get().teamMembers : undefined },
+          { onEvent: handleEvent, signal: abortCtl.signal },
+        );
+        if (get().streaming) finalizePending();
+      };
+
+      try {
+        await attemptStream();
+        streamError = null;
+      } catch (e) {
+        streamError = e;
+        if (e instanceof StreamAbortedError) {
+          // 用户主动停止 / 页面隐藏：不做轮询挽回
+        } else {
+          // 断流：后端 detached 生成仍在跑，改为轮询订阅已落库进度
+          const polled = await pollUntilComplete(
+            caseId,
+            content,
+            (parts, textContent) =>
+              patchPending((m) => ({ ...m, parts, content: textContent })),
+            abortCtl?.signal ?? undefined,
           );
-          // 流正常结束但未收到 done/error 时兜底收尾
-          if (get().streaming) finalizePending();
-          streamError = null;
-          break;
-        } catch (e) {
-          streamError = e;
-          if (e instanceof StreamAbortedError) break;
-          const salvaged = await salvageFromServer(caseId, content);
-          if (salvaged) {
-            // 服务端已有本轮流出的部分结果：直接挽回收尾，不再重试
+          if (polled) {
             finalizePending((m) => ({
               ...m,
-              id: salvaged.last.id,
-              content: salvaged.last.content,
-              parts: salvaged.parts,
+              id: polled.last.id,
+              content: polled.last.content,
+              parts: polled.parts,
             }));
-            set({ artifacts: sortArtifacts(salvaged.artifacts ?? []) });
+            set({ artifacts: sortArtifacts(polled.artifacts ?? []) });
             streamError = null;
-            break;
-          }
-          if (attempt < MAX_STREAM_ATTEMPTS) {
-            // 清空 pending 消息的半成品 parts，短暂退避后自动重试
+          } else if (abortCtl?.signal.aborted) {
+            streamError = new StreamAbortedError();
+          } else {
+            // 轮询也没拿到结果（生成任务异常）：兜底重试一次完整生成
             patchPending((m) => ({ ...m, parts: [], content: "" }));
-            await new Promise((r) => setTimeout(r, 1200 * attempt));
+            await sleep(1200);
+            try {
+              await attemptStream();
+              streamError = null;
+            } catch (e2) {
+              streamError = e2;
+              if (!(e2 instanceof StreamAbortedError)) {
+                const salvaged = await salvageFromServer(caseId, content);
+                if (salvaged) {
+                  finalizePending((m) => ({
+                    ...m,
+                    id: salvaged.last.id,
+                    content: salvaged.last.content,
+                    parts: salvaged.parts,
+                  }));
+                  set({ artifacts: sortArtifacts(salvaged.artifacts ?? []) });
+                  streamError = null;
+                }
+              }
+            }
           }
         }
       }
