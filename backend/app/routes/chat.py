@@ -46,16 +46,50 @@ async def _gen_title(question: str) -> str:
         return fallback
 
 
-async def _chat_stream_pinned(req: ChatRequest) -> AsyncIterator[str]:
+# ---------------------------------------------------------------------------
+# Detached generation: 公网预览网关会间歇性掐断 SSE 长连接（浏览器报
+# ERR_INCOMPLETE_CHUNKED_ENCODING）。生成任务不能跟随连接一起死：
+# _run_chat 作为独立 asyncio.Task 运行，SSE 包装器只是它的一个"订阅者"。
+# 客户端断连后任务继续执行并落库，前端通过 /chat/status 轮询取回结果。
+# ---------------------------------------------------------------------------
+
+# case_id -> 正在生成的任务（同一 case 同时只允许一条活跃生成）
+_ACTIVE_RUNS: dict[str, "asyncio.Task[None]"] = {}
+
+_STOP = object()  # 队列结束哨兵
+
+
+async def _run_chat(req: ChatRequest, queue: "asyncio.Queue") -> None:
+    """执行一次完整生成；事件写入 queue（订阅者已断开时自动丢弃）。
+
+    该函数在独立 Task 中运行：浏览器断连只影响 SSE 订阅者，不影响本任务。
+    """
     case_id = req.case_id
     case = db.get_case(case_id) if case_id else None
     if case is None:
         case = db.create_case()
     case_id = case["id"]
 
+    def emit(event: dict) -> None:
+        try:
+            queue.put_nowait(sse(event))  # type: ignore[arg-type]
+        except asyncio.QueueFull:
+            pass  # 订阅者断开或积压：落库才是真相源，事件可丢
+
     # 1) 落库 user message；上下文取最近 12 条（含本条）
+    #    断流重试签名：尾部正好是 [user(同文本), assistant(空)] 时，
+    #    复用该 assistant 行，不再追加重复的 user 消息。
+    msgs = db.list_messages(case_id, limit=3)
+    retry_tail = (
+        len(msgs) >= 2
+        and msgs[-1]["role"] == "assistant"
+        and not (msgs[-1].get("content") or "").strip()
+        and msgs[-2]["role"] == "user"
+        and (msgs[-2].get("content") or "") == req.message
+    )
     is_first = db.count_messages(case_id, role="user") == 0
-    db.add_message(case_id, role="user", content=req.message)
+    if not retry_tail:
+        db.add_message(case_id, role="user", content=req.message)
     history = _history_for_llm(case_id)
 
     message_id = db.new_id()
@@ -71,13 +105,17 @@ async def _chat_stream_pinned(req: ChatRequest) -> AsyncIterator[str]:
     # Create the assistant row before any long-running work. Artifacts created
     # during streaming now always refer to a durable message, even if the
     # browser disconnects or the async generator is cancelled.
-    db.add_message(
-        case_id,
-        role="assistant",
-        agent=record_agent,
-        content="",
-        message_id=message_id,
-    )
+    if retry_tail:
+        # 重试复用上一轮留下的空 assistant 行，避免累积 [user, 空] 垃圾对
+        message_id = msgs[-1]["id"]
+    else:
+        db.add_message(
+            case_id,
+            role="assistant",
+            agent=record_agent,
+            content="",
+            message_id=message_id,
+        )
 
     def remember_event(event: dict) -> None:
         event_type = str(event.get("type") or "")
@@ -134,8 +172,11 @@ async def _chat_stream_pinned(req: ChatRequest) -> AsyncIterator[str]:
             created_graphs.append(row)
         return row
 
-    yield sse({"type": "meta", "case_id": case_id, "mode": req.mode, "agent": req.agent,
-               "team_members": req.team_members})
+    emit({"type": "meta", "case_id": case_id, "mode": req.mode, "agent": req.agent,
+          "team_members": req.team_members})
+    task = asyncio.current_task()
+    if task is not None:
+        _ACTIVE_RUNS[case_id] = task
     try:
         if req.mode == "team":
             # team 模式：history 传给 synthesize；问题原文作为规划输入
@@ -147,7 +188,7 @@ async def _chat_stream_pinned(req: ChatRequest) -> AsyncIterator[str]:
                                      team_members=req.team_members):
                 remember_event(ev)
                 await checkpoint(force=ev.get("type") in {"artifact", "agent_step"})
-                yield sse(ev)
+                emit(ev)
                 planned_agents = {
                     str(item.get("agent") or "")
                     for item in state.get("team_plan", [])
@@ -181,7 +222,7 @@ async def _chat_stream_pinned(req: ChatRequest) -> AsyncIterator[str]:
                         state["tool_trace"].append(handoff_event)
                         remember_event(handoff_event)
                         await checkpoint(force=True)
-                        yield sse(handoff_event)
+                        emit(handoff_event)
                     except Exception as error:  # noqa: BLE001
                         handoff_error = (
                             str(error.detail)
@@ -203,7 +244,7 @@ async def _chat_stream_pinned(req: ChatRequest) -> AsyncIterator[str]:
                     state["tool_trace"].append(skipped_event)
                     remember_event(skipped_event)
                     await checkpoint(force=True)
-                    yield sse(skipped_event)
+                    emit(skipped_event)
                 else:
                     skipped_event = {
                         "type": "agent_step",
@@ -214,7 +255,7 @@ async def _chat_stream_pinned(req: ChatRequest) -> AsyncIterator[str]:
                     state["tool_trace"].append(skipped_event)
                     remember_event(skipped_event)
                     await checkpoint(force=True)
-                    yield sse(skipped_event)
+                    emit(skipped_event)
         else:
             # mode == "agent" | "auto"：单 Agent 工具循环
             # 优先级：req.agent → "router"（向后兼容）
@@ -222,8 +263,8 @@ async def _chat_stream_pinned(req: ChatRequest) -> AsyncIterator[str]:
             agent_def = get_agent(agent_id)
             if agent_def is None:
                 valid = ", ".join(sorted(AGENTS.keys()))
-                yield sse({"type": "error",
-                           "message": f"未知 Agent「{agent_id}」。可用: {valid}"})
+                emit({"type": "error",
+                      "message": f"未知 Agent「{agent_id}」。可用: {valid}"})
                 return
             messages = [{"role": "system", "content": system_prompt(agent_id)}] + history
             async for ev in run_agent(agent_id, messages, agent_def=agent_def,
@@ -231,7 +272,7 @@ async def _chat_stream_pinned(req: ChatRequest) -> AsyncIterator[str]:
                                       max_rounds=config.AUTO_MAX_ROUNDS):
                 remember_event(ev)
                 await checkpoint(force=ev.get("type") in {"artifact", "tool_result"})
-                yield sse(ev)
+                emit(ev)
 
         # 2) Finalize the durable assistant message.
         await checkpoint(force=True)
@@ -240,23 +281,18 @@ async def _chat_stream_pinned(req: ChatRequest) -> AsyncIterator[str]:
         if is_first:
             title = await _gen_title(req.message)
             await asyncio.to_thread(db.update_case_title, case_id, title)
-            yield sse({"type": "case_title", "title": title})
+            emit({"type": "case_title", "title": title})
 
         stream_completed = True
-        yield sse({"type": "done", "case_id": case_id, "message_id": message_id})
+        emit({"type": "done", "case_id": case_id, "message_id": message_id})
     except asyncio.CancelledError:
-        # 前端断开 / 用户主动停止：尽力保存已产出内容，然后让 ASGI 正常收尾
-        # 不 yield error（连接已断，前端收不到），只落库 + 日志
+        # 用户主动停止（/chat/cancel）：尽力保存已产出内容后退出。
+        # 客户端单纯断开不再走到这里——生成在独立 Task 中继续。
         try:
-            if state["content"] or state["tool_trace"]:
-                err_agent = req.agent if req.mode == "agent" and req.agent else "router"
-                db.add_message(case_id, role="assistant", agent=err_agent,
-                               content=state["content"],
-                               tool_trace=state["tool_trace"] or None,
-                               message_id=message_id)
-        except Exception:  # noqa: BLE001
+            await checkpoint(force=True)
+        except BaseException:  # noqa: BLE001
             pass
-        print(f"CHAT case={case_id} cancelled by client (rounds={state.get('rounds', 0)}, "
+        print(f"CHAT case={case_id} cancelled by user (rounds={state.get('rounds', 0)}, "
               f"content_len={len(state.get('content', ''))})", flush=True)
         raise
     except Exception as e:  # noqa: BLE001
@@ -265,11 +301,10 @@ async def _chat_stream_pinned(req: ChatRequest) -> AsyncIterator[str]:
             "phase": "interrupted",
             "note": redact_runtime_error(f"{type(e).__name__}: {e}"),
         })
-        yield sse({"type": "error", "message": redact_runtime_error(f"{type(e).__name__}: {e}")})
+        emit({"type": "error", "message": redact_runtime_error(f"{type(e).__name__}: {e}")})
     finally:
-        # asyncio.CancelledError / GeneratorExit are not reliably caught by an
-        # Exception handler. A final checkpoint preserves partial progress on
-        # refresh, tab close, explicit stop, or server-side cancellation.
+        # A final checkpoint preserves partial progress on refresh, tab close,
+        # explicit stop, or server-side cancellation.
         try:
             if not stream_completed and not any(
                 item.get("phase") == "interrupted" for item in persisted_trace
@@ -282,54 +317,45 @@ async def _chat_stream_pinned(req: ChatRequest) -> AsyncIterator[str]:
             await checkpoint(force=True)
         except BaseException:  # noqa: BLE001
             pass
+        # 无论正常结束、出错还是被取消：注销活跃任务并通知订阅者收尾
+        if _ACTIVE_RUNS.get(case_id) is task:
+            del _ACTIVE_RUNS[case_id]
+        try:
+            queue.put_nowait(_STOP)  # type: ignore[arg-type]
+        except asyncio.QueueFull:
+            pass
 
 
 _SSE_HEARTBEAT_SECONDS = 4.0
 
 
 async def _chat_stream(req: ChatRequest) -> AsyncIterator[str]:
-    """Keep endpoint, credential and model id consistent for one chat turn.
+    """SSE 订阅器：生成在独立 Task 中运行，本函数只负责转发 + 心跳。
 
-    外层再包一层心跳：内部阶段（如路由器非流式 LLM_JSON 调用、慢技能执行）
-    可能长时间不产出事件，中间代理（沙箱预览代理等）会在空闲后掐断连接，
-    浏览器表现为 "network error"。静默超过 4s 时发送 `data: {"type":"ping"}`
-    保活帧：前端 handleEvent 对未知 type 走 switch 直落、安全忽略；用真实
-    data 帧而非 SSE 注释，兼容只按数据帧计活/解析 SSE 的代理。
+    客户端断连（网关掐流）只终止本订阅器；_run_chat 继续执行并落库，
+    前端随后通过 GET /chat/status/{case_id} 轮询取回结果。
+    静默超过 4s 时发送 `data: {"type":"ping"}` 保活帧。
     """
 
+    queue: asyncio.Queue = asyncio.Queue(maxsize=2048)
+    # 任务在创建时继承 contextvar，整轮生成固定同一 runtime target
     target = resolve_runtime_target()
     with runtime_target_context(target):
-        stream = _chat_stream_pinned(req)
-        pending: "asyncio.Task[str] | None" = None
-        try:
-            while True:
-                if pending is None:
-                    pending = asyncio.ensure_future(stream.__anext__())
-                done, _ = await asyncio.wait({pending}, timeout=_SSE_HEARTBEAT_SECONDS)
-                if not done:
-                    yield 'data: {"type":"ping"}\n\n'
-                    continue
-                task, pending = pending, None
-                try:
-                    event = task.result()
-                except StopAsyncIteration:
-                    break
-                yield event
-        finally:
-            if pending is not None:
-                # 先等取消真正送达内部生成器，否则 aclose() 会撞上
-                # "asynchronous generator is already running"
-                pending.cancel()
-                try:
-                    await pending
-                except BaseException:  # noqa: BLE001
-                    pass
-            # Explicitly close the delegated async generator so its durability
-            # checkpoint finishes before callers tear down the database.
+        generation = asyncio.ensure_future(_run_chat(req, queue))
+    try:
+        while True:
             try:
-                await stream.aclose()
-            except BaseException:  # noqa: BLE001
-                pass
+                event = await asyncio.wait_for(queue.get(), timeout=_SSE_HEARTBEAT_SECONDS)
+            except asyncio.TimeoutError:
+                yield 'data: {"type":"ping"}\n\n'
+                continue
+            if event is _STOP:
+                break
+            yield event  # type: ignore[misc]
+    finally:
+        # 不 cancel generation：客户端断开恰恰是 detach 生效的场景。
+        # Task 引用由 _ACTIVE_RUNS 持有，不会被 GC。
+        _ = generation
 
 
 @router.post("/chat")
