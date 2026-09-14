@@ -13,21 +13,22 @@ from dotenv import load_dotenv
 _BACKEND_DIR = Path(__file__).resolve().parents[1]
 _PROJECT_ROOT = _BACKEND_DIR.parent
 
-# Project-root .env first (shared, contains the real ARK_API_KEY),
+# Project-root .env first (shared, contains the real LLM_API_KEY),
 # then backend-local .env may override.
 load_dotenv(_PROJECT_ROOT / ".env", override=False)
 load_dotenv(_BACKEND_DIR / ".env", override=True)
 
-ARK_API_URL: str = os.getenv("ARK_API_URL", "")
-ARK_API_KEY: str = os.getenv("ARK_API_KEY", "")
-ARK_MODEL: str = os.getenv("ARK_MODEL", "deepseek-v4-flash")
+# 默认 LLM 服务商（OpenAI 兼容接口，可换成任意 OpenAI 兼容端点）
+LLM_API_URL: str = os.getenv("LLM_API_URL", "")
+LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
+LLM_MODEL: str = os.getenv("LLM_MODEL", "deepseek-v4-flash")
 
 MAAS_API_URL: str = os.getenv("MAAS_API_URL", "")
 MAAS_API_KEY: str = os.getenv("MAAS_API_KEY", "")
 MAAS_MODEL: str = os.getenv("MAAS_MODEL", "")
 
 def resolve_llm() -> tuple[str, str, str]:
-    """返回 (base_url, api_key, model)。优先级：MAAS → ARK；自动修正 URL/KEY 写反的容错。"""
+    """返回 (base_url, api_key, model)。优先级：MAAS → 默认 LLM；自动修正 URL/KEY 写反的容错。"""
     maas_url = str(MAAS_API_URL or "").strip()
     maas_key = str(MAAS_API_KEY or "").strip()
     maas_model = str(MAAS_MODEL or "").strip()
@@ -39,8 +40,8 @@ def resolve_llm() -> tuple[str, str, str]:
             u_is_url, k_is_url = True, False
         if u_is_url and (not k_is_url) and maas_model:
             return (maas_url.rstrip("/"), maas_key, maas_model)
-    # fallback ARK
-    return (str(ARK_API_URL or "").rstrip("/"), str(ARK_API_KEY or ""), str(ARK_MODEL or "deepseek-v4-flash"))
+    # fallback 默认 LLM 服务商
+    return (str(LLM_API_URL or "").rstrip("/"), str(LLM_API_KEY or ""), str(LLM_MODEL or "deepseek-v4-flash"))
 
 LLM_BASE_URL, LLM_API_KEY, LLM_MODEL = resolve_llm()
 

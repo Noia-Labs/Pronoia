@@ -27,7 +27,7 @@ class TestShareBundleSanitizer(unittest.TestCase):
             sender_url = "https://private-gateway.example/v2"
             sender_key = "sender-key-that-must-not-ship"
             (stage / ".env.example").write_text(
-                f"ARK_API_URL={provider_url}\nARK_API_KEY=your-api-key-here\n",
+                f"LLM_API_URL={provider_url}\nLLM_API_KEY=your-api-key-here\n",
                 encoding="utf-8",
             )
             (stage / ".env.share.example").write_text(
@@ -35,7 +35,7 @@ class TestShareBundleSanitizer(unittest.TestCase):
                 encoding="utf-8",
             )
             (stage / "backend" / "app" / "config.py").write_text(
-                f'URL = os.getenv("ARK_API_URL", "{provider_url}")\n',
+                f'URL = os.getenv("LLM_API_URL", "{provider_url}")\n',
                 encoding="utf-8",
             )
             (stage / "frontend" / "src" / "providers.ts").write_text(
@@ -51,7 +51,7 @@ class TestShareBundleSanitizer(unittest.TestCase):
                 encoding="utf-8",
             )
             (stage / "docs" / "plan.md").write_text(
-                f"LLM: ARK_API_URL={provider_url}\n",
+                f"LLM: LLM_API_URL={provider_url}\n",
                 encoding="utf-8",
             )
             data_source = "https://public-data.example/query"
@@ -64,7 +64,7 @@ class TestShareBundleSanitizer(unittest.TestCase):
             )
             source_env = root / ".env"
             source_env.write_text(
-                f"ARK_API_URL={sender_url}\nARK_API_KEY={sender_key}\n",
+                f"LLM_API_URL={sender_url}\nLLM_API_KEY={sender_key}\n",
                 encoding="utf-8",
             )
 
@@ -92,7 +92,7 @@ class TestShareBundleSanitizer(unittest.TestCase):
             self.assertNotIn(provider_url, combined)
             self.assertNotIn(sender_url, combined)
             self.assertNotIn(sender_key, combined)
-            self.assertIn("ARK_API_URL=", combined)
+            self.assertIn("LLM_API_URL=", combined)
             self.assertIn('baseUrl: ""', combined)
             self.assertIn(data_source, combined)
             self.assertTrue((stage / "SHARE_SANITIZATION.md").is_file())

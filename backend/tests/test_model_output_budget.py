@@ -19,9 +19,9 @@ def isolated_environment(monkeypatch: pytest.MonkeyPatch):
     # also runs safely beside suites which have already imported config.
     monkeypatch.setattr(dotenv, "load_dotenv", lambda *_args, **_kwargs: False)
     for name, value in {
-        "ARK_API_URL": "https://platform.example.invalid/v1",
-        "ARK_API_KEY": "synthetic-platform-secret",
-        "ARK_MODEL": "platform-test",
+        "LLM_API_URL": "https://platform.example.invalid/v1",
+        "LLM_API_KEY": "synthetic-platform-secret",
+        "LLM_MODEL": "platform-test",
         "MAAS_API_URL": "",
         "MAAS_API_KEY": "",
         "MAAS_MODEL": "",

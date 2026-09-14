@@ -39,7 +39,7 @@ cp .env.share.example .env.share
 chmod 600 .env.share
 ```
 
-编辑 `.env.share`，先填写 `PRONOIA_SHARE_PASSWORD`（至少 12 个字符），再填写一个可用的模型配置。默认使用 `ARK_API_*`；只有 `MAAS_API_URL`、`MAAS_API_KEY`、`MAAS_MODEL` 三项都填写时才会优先使用 MAAS。账号和 API Key 只在运行时注入，不会进入镜像。
+编辑 `.env.share`，先填写 `PRONOIA_SHARE_PASSWORD`（至少 12 个字符），再填写一个可用的模型配置。默认使用 `LLM_API_*`；只有 `MAAS_API_URL`、`MAAS_API_KEY`、`MAAS_MODEL` 三项都填写时才会优先使用 MAAS。账号和 API Key 只在运行时注入，不会进入镜像。
 
 构建并启动：
 

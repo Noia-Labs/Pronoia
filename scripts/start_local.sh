@@ -40,7 +40,7 @@ wait_port_free() {
 
 check_env() {
   if [ ! -f "$ROOT/.env" ]; then
-    echo "[start_local] 缺少 $ROOT/.env，请先 cp .env.example .env 并填入 ARK_API_KEY"
+    echo "[start_local] 缺少 $ROOT/.env，请先 cp .env.example .env 并填入 LLM_API_KEY"
     exit 1
   fi
   if [ ! -x "$VENV_PY" ]; then

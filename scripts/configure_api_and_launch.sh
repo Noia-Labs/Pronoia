@@ -199,9 +199,9 @@ valid_model() {
 
 configuration_is_valid() {
   local current_url current_key current_model
-  current_url="$(read_env_value ARK_API_URL 2>/dev/null || true)"
-  current_key="$(read_env_value ARK_API_KEY 2>/dev/null || true)"
-  current_model="$(read_env_value ARK_MODEL 2>/dev/null || true)"
+  current_url="$(read_env_value LLM_API_URL 2>/dev/null || true)"
+  current_key="$(read_env_value LLM_API_KEY 2>/dev/null || true)"
+  current_model="$(read_env_value LLM_MODEL 2>/dev/null || true)"
   valid_api_url "$current_url" && valid_api_key "$current_key" && valid_model "$current_model"
 }
 
@@ -234,7 +234,7 @@ write_configuration() {
         candidate = $0
         sub(/^[[:space:]]*/, "", candidate)
         sub(/^export[[:space:]]+/, "", candidate)
-        if (candidate ~ /^(ARK_API_URL|ARK_API_KEY|ARK_MODEL|MAAS_API_URL|MAAS_API_KEY|MAAS_MODEL)[[:space:]]*=/) next
+        if (candidate ~ /^(LLM_API_URL|LLM_API_KEY|LLM_MODEL|MAAS_API_URL|MAAS_API_KEY|MAAS_MODEL)[[:space:]]*=/) next
         # 清理新旧启动器写入的托管注释，不依赖任何服务商品牌名称。
         if (candidate ~ /^# Pronoia .*API.*\(managed by launcher\)$/) next
         print
@@ -247,9 +247,9 @@ write_configuration() {
   escaped_model="$(dotenv_escape "$model")"
   {
     printf '\n%s\n' '# Pronoia model API configuration (managed by launcher)'
-    printf "ARK_API_URL='%s'\n" "$escaped_url"
-    printf "ARK_API_KEY='%s'\n" "$escaped_key"
-    printf "ARK_MODEL='%s'\n" "$escaped_model"
+    printf "LLM_API_URL='%s'\n" "$escaped_url"
+    printf "LLM_API_KEY='%s'\n" "$escaped_key"
+    printf "LLM_MODEL='%s'\n" "$escaped_model"
   } >> "$TEMP_FILE"
 
   chmod 600 "$TEMP_FILE"
@@ -260,8 +260,8 @@ write_configuration() {
 
 collect_interactive_configuration() {
   local default_url default_model answer api_url api_key model
-  default_url="$(read_env_value ARK_API_URL 2>/dev/null || true)"
-  default_model="$(read_env_value ARK_MODEL 2>/dev/null || true)"
+  default_url="$(read_env_value LLM_API_URL 2>/dev/null || true)"
+  default_model="$(read_env_value LLM_MODEL 2>/dev/null || true)"
   valid_api_url "$default_url" || default_url=''
   valid_model "$default_model" || default_model='deepseek-v4-flash'
 

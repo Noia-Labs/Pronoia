@@ -102,7 +102,7 @@ def _normalize_suggestions(items: list[dict] | None) -> list[dict]:
 
 @router.get("/health")
 def health():
-    return {"ok": True, "llm": "configured" if config.ARK_API_KEY else "missing_api_key"}
+    return {"ok": True, "llm": "configured" if config.LLM_API_KEY else "missing_api_key"}
 
 
 @router.get("/skills")
