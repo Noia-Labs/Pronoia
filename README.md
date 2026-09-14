@@ -55,7 +55,7 @@ scripts/pronoia bt run --events data/samples/events_cn_stock_10.jsonl \
 ┌──────────── Frontend (React 18 + Vite + Tailwind) ────────────┐
 │  Sidebar · ChatPanel · RightPanel · Backtest / Arena 工作台    │
 └──────────────────────────────┬─────────────────────────────────┘
-                               │ REST + SSE
+                               │ REST + SSE（断流自动降级 detach+轮询）
 ┌──────────────────────────────▼─────────────────────────────────┐
 │              Backend (FastAPI · 单进程 · SQLite)               │
 │  routes/ ──► llm 流式 tool-call 循环 ──► agents/team 协作      │
@@ -87,17 +87,9 @@ scripts/pronoia bt run --events data/samples/events_cn_stock_10.jsonl \
 
 - [回测平台架构](docs/backtesting-architecture.md)
 - [团队分享部署](docs/team-sharing.md)
+- [路线图](docs/roadmap.md)
 - [更新日志](CHANGELOG.md)
 - [回测研究区说明](backtesting/README.md)
-
-## 路线图
-
-- [x] 对话式研究闭环（提问 → 采证 → 产出物 → Case 沉淀）
-- [x] 事件研究法引擎（AR/CAR）与事件驱动回测平台
-- [x] Arena 横向评测与成本-效果帕累托分析
-- [ ] 研究资产化：历史 Case 检索、证据有效性标注、复盘面板
-- [ ] 事件监控与预警（定时任务 + 推送）
-- [ ] TTRL v0：命中率统计与 calibration 面板，策略自进化闭环
 
 ## 免责声明
 
