@@ -15,7 +15,7 @@ API URL 必须使用 HTTPS，只有 `localhost` 或 `127.0.0.1` 的本机模型�
 建议先使用 GitHub 私有仓库邀请同事。即使以后公开源码，也只提交程序、测试和脱敏样例，不提交以下内容：
 
 - `.env`、`.env.share`、API Key、证书或其他凭据；
-- `backend/fever.db*` 或任何 SQLite 文件；
+- `backend/pronoia.db*` 或任何 SQLite 文件；
 - `data/`、私有 `backtesting/` 数据、回测结果和轨迹；
 - `frontend/node_modules/`、`frontend/dist/`、运行日志和缓存。
 
@@ -39,7 +39,7 @@ cp .env.share.example .env.share
 chmod 600 .env.share
 ```
 
-编辑 `.env.share`，先填写 `PRONOIA_SHARE_PASSWORD`（至少 12 个字符），再填写一个可用的模型配置。默认使用 `ARK_API_*`；只有 `MAAS_API_URL`、`MAAS_API_KEY`、`MAAS_MODEL` 三项都填写时才会优先使用 MAAS。账号和 API Key 只在运行时注入，不会进入镜像。
+编辑 `.env.share`，先填写 `PRONOIA_SHARE_PASSWORD`（至少 12 个字符），再填写一个可用的模型配置。默认使用 `LLM_API_*`；只有 `MAAS_API_URL`、`MAAS_API_KEY`、`MAAS_MODEL` 三项都填写时才会优先使用 MAAS。账号和 API Key 只在运行时注入，不会进入镜像。
 
 构建并启动：
 
@@ -66,8 +66,8 @@ Compose 创建 `pronoia-state` 命名卷并挂载到 `/var/lib/pronoia`：
 
 | 容器路径 | 环境变量 | 内容 |
 |---|---|---|
-| `/var/lib/pronoia/fever.db` | `FEVER_DB_PATH` | 案例、Run、Arena 和数据集元数据 |
-| `/var/lib/pronoia/data` | `FEVER_DATA_DIR` | 行情快照、回测结果、交易 CSV 和轨迹 |
+| `/var/lib/pronoia/pronoia.db` | `PRONOIA_DB_PATH` | 案例、Run、Arena 和数据集元数据 |
+| `/var/lib/pronoia/data` | `PRONOIA_DATA_DIR` | 行情快照、回测结果、交易 CSV 和轨迹 |
 
 新环境可以从空卷开始。历史行情体积较大或包含授权限制时，应通过私有对象存储、服务器磁盘或离线传输提供，不能上传到源码仓库，也不能在 `Dockerfile` 中 `COPY`。
 
@@ -84,7 +84,7 @@ volumes:
 sudo install -d -o 10001 -g 10001 /srv/pronoia/state/data
 ```
 
-把市场数据放入 `/srv/pronoia/state/data`，把数据库放在 `/srv/pronoia/state/fever.db`。迁移 SQLite 时必须先停止源服务，并把主库及存在的 `-wal`、`-shm` 文件作为同一个快照一起迁移；更稳妥的方式是先执行 SQLite 在线备份或 checkpoint。迁移完成后保持所有文件归 `10001:10001` 所有。
+把市场数据放入 `/srv/pronoia/state/data`，把数据库放在 `/srv/pronoia/state/pronoia.db`。迁移 SQLite 时必须先停止源服务，并把主库及存在的 `-wal`、`-shm` 文件作为同一个快照一起迁移；更稳妥的方式是先执行 SQLite 在线备份或 checkpoint。迁移完成后保持所有文件归 `10001:10001` 所有。
 
 旧版 `backtesting/` 事件集由启动扫描器从 `/app/backtesting` 读取。如果需要这些私有事件集，请在 Compose 中另加只读挂载，不要复制进仓库或镜像：
 

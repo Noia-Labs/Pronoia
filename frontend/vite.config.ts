@@ -2,8 +2,8 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 // 端口可通过环境变量覆盖（start_local.sh 用），默认保持原行为 5173 / 8000
-const FRONTEND_PORT = Number(process.env.FEVER_FRONTEND_PORT || 5173);
-const BACKEND_PORT = Number(process.env.FEVER_BACKEND_PORT || 8000);
+const FRONTEND_PORT = Number(process.env.PRONOIA_FRONTEND_PORT || 5173);
+const BACKEND_PORT = Number(process.env.PRONOIA_BACKEND_PORT || 8000);
 
 export default defineConfig({
   plugins: [react()],

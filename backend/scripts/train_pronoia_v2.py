@@ -1,20 +1,20 @@
 from __future__ import annotations
 """
-train_fever_v2.py — FEVER 事件判别器 SFT + DPO 5-fold 训练脚手架 (v2)
+train_pronoia_v2.py — PRONOIA 事件判别器 SFT + DPO 5-fold 训练脚手架 (v2)
 =============================================================
 目标：跑通 train → hold-out eval → 真实 ACC(+95% Wilson CI) 闭环。
 在有 GPU + trl/peft/datasets/accelerate 装完后，直接一条命令：
 
   # (1) 只做 5-fold split（不训练，先看每 fold market/etype 分布是否平衡）
-  python backend/scripts/train_fever_v2.py split --k=5 --seed=20260809
+  python backend/scripts/train_pronoia_v2.py split --k=5 --seed=20260809
 
   # (2) 训练 (需 GPU + trl 安装)
-  python backend/scripts/train_fever_v2.py train-sft   --fold 0 --model-name meta-llama/Llama-3.1-8B-Instruct
-  python backend/scripts/train_fever_v2.py train-dpo   --fold 0 --model-name runs/fever_sft_fold0/last
-  python backend/scripts/train_fever_v2.py eval-all    --model-pattern "runs/fever_dpo_fold*/last"
+  python backend/scripts/train_pronoia_v2.py train-sft   --fold 0 --model-name meta-llama/Llama-3.1-8B-Instruct
+  python backend/scripts/train_pronoia_v2.py train-dpo   --fold 0 --model-name runs/pronoia_sft_fold0/last
+  python backend/scripts/train_pronoia_v2.py eval-all    --model-pattern "runs/pronoia_dpo_fold*/last"
 
   # (3) 输出所有 fold 的 hold-out 合并 ACC + 95% CI + market/L2 split → 过 70% 否？
-  python backend/scripts/train_fever_v2.py score-all
+  python backend/scripts/train_pronoia_v2.py score-all
 
 依赖（按需安装，脚手架不 import，避免没装就崩）:
     pip install trl peft datasets accelerate transformers bitsandbytes torch
@@ -28,8 +28,8 @@ sys.path.insert(0, str(ROOT))
 RUNS = ROOT / "runs"
 RUNS.mkdir(exist_ok=True)
 
-SFT_JSONL   = DATA / "_sft_rft_artifacts_v2" / "fever_sft_train_v2_1000.jsonl"
-DPO_JSONL   = DATA / "_sft_rft_artifacts_v2" / "fever_rft_pairs_v2_1000.jsonl"
+SFT_JSONL   = DATA / "_sft_rft_artifacts_v2" / "pronoia_sft_train_v2_1000.jsonl"
+DPO_JSONL   = DATA / "_sft_rft_artifacts_v2" / "pronoia_rft_pairs_v2_1000.jsonl"
 EVENTS_JSONL= DATA / "events_phase1_backtestable_natural_1000.jsonl"
 LABELS_JSONL= DATA / "labels_phase1_1000.jsonl"
 SPLIT_DIR   = DATA / "_sft_rft_artifacts_v2" / "folds_v2_1000"
@@ -138,7 +138,7 @@ def cmd_train_sft(args):
         print(f"[ERROR] 先跑 split 再 train-sft。fold_dir {fold_dir} 不存在")
         return 2
     model_name = args.model_name
-    out_dir = RUNS / f"fever_sft_fold{args.fold}"
+    out_dir = RUNS / f"pronoia_sft_fold{args.fold}"
     ds = load_dataset("json", data_files=str(fold_dir/"sft_train.jsonl"))["train"]
     lora = LoraConfig(r=16, lora_alpha=32, target_modules=["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"],
                       lora_dropout=0.05, bias="none", task_type="CAUSAL_LM")
@@ -158,7 +158,7 @@ def cmd_train_dpo(args):
     fold_dir = SPLIT_DIR / f"fold{args.fold}"
     if not fold_dir.exists():
         print(f"[ERROR] 先 split。fold_dir {fold_dir} 不存在"); return 2
-    out_dir = RUNS / f"fever_dpo_fold{args.fold}"
+    out_dir = RUNS / f"pronoia_dpo_fold{args.fold}"
     ds = load_dataset("json", data_files=str(fold_dir/"dpo_train.jsonl"))["train"]
     lora = LoraConfig(r=16, lora_alpha=32, target_modules=["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"],
                       lora_dropout=0.05, bias="none", task_type="CAUSAL_LM")
@@ -174,7 +174,7 @@ def cmd_score_all(args):
     自动合并算 overall ACC + Wilson 95% CI + market/L2 split。"""
     labels = {r["event_id"]:r for r in load_jsonl(LABELS_JSONL)}
     evs    = {r["event_id"]:r for r in load_jsonl(EVENTS_JSONL)}
-    pred_files = list(RUNS.glob("fever_dpo_fold*/holdout_predictions.jsonl")) or list(RUNS.glob("fever_sft_fold*/holdout_predictions.jsonl"))
+    pred_files = list(RUNS.glob("pronoia_dpo_fold*/holdout_predictions.jsonl")) or list(RUNS.glob("pronoia_sft_fold*/holdout_predictions.jsonl"))
     if not pred_files:
         print("[score-all] 暂未发现 holdout_predictions.jsonl。先训练 + eval 产出 predictions。当前给出仿真预期 (N=810):")
         from ._sim_ci import ci_table  # not exist → fallback
@@ -229,7 +229,7 @@ def cmd_score_all(args):
         print(f"    {t}: {100*a:.2f}%  ok/denom={o}/{d}")
 
 def build_parser():
-    p = argparse.ArgumentParser(prog="train_fever_v2", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(prog="train_pronoia_v2", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
     ps = sub.add_parser("split", help="做 stratified 5-fold split（不训练，纯预处理）")
     ps.add_argument("--k", type=int, default=5); ps.add_argument("--seed", type=int, default=20260809); ps.set_defaults(func=cmd_split)

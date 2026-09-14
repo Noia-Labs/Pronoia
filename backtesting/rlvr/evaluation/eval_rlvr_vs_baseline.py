@@ -7,7 +7,7 @@
 
 七大类指标（§5.1）：
   ① 定向 primary strict ACC    → label_t{primary_h} 匹配
-  ② avg_all strict ACC          → label_avg_all 匹配（和 FEVER 旧口径对齐，便于环比）
+  ② avg_all strict ACC          → label_avg_all 匹配（和 PRONOIA 旧口径对齐，便于环比）
   ③ 双窗一致率                  → direction=primary 且 direction=secondary[0]
   ④ 量价一致率                  → vol_regime 桶内 ACC 分布（HIGH/NORMAL/LOW 三桶）
   ⑤ MoE 健康度                  → Router 权重 entropy / active experts 分布
@@ -74,7 +74,7 @@ def _safe_mean(vals: list[float]) -> float:
 def _parse_prediction(pred: dict) -> dict:
     """兼容多种 preds 格式：
       · {event_id, direction, confidence, completion}（RLVR 新格式）
-      · {event_id, pred, prediction}（旧 FEVER 格式）"""
+      · {event_id, pred, prediction}（旧 PRONOIA 格式）"""
     direction = (pred.get("direction") or pred.get("pred") or pred.get("prediction") or "neutral")
     direction = str(direction).lower()
     if direction not in ("up", "down", "neutral"):

@@ -502,7 +502,7 @@ def _run_baseline_with_cb(
 ) -> list[TeamPrediction]:
     """baseline runner 本身是批量的，拆成逐事件调用保证进度可见。
 
-    调试/验证 pause/resume：设置环境变量 FEVER_BT_SLEEP_PER_EVENT=1.2 可让每条事件后 sleep N 秒，
+    调试/验证 pause/resume：设置环境变量 PRONOIA_BT_SLEEP_PER_EVENT=1.2 可让每条事件后 sleep N 秒，
     模拟真实慢回测。
     """
     # baseline 内部其实没有 per-event LLM；但我们对每个事件独立调 run_baseline([ev])
@@ -510,7 +510,7 @@ def _run_baseline_with_cb(
     import os as _os
     _sleep_s = 0.0
     try:
-        _sleep_s = float(_os.environ.get("FEVER_BT_SLEEP_PER_EVENT") or "0")
+        _sleep_s = float(_os.environ.get("PRONOIA_BT_SLEEP_PER_EVENT") or "0")
     except Exception:
         _sleep_s = 0.0
     from .engine import run_baseline

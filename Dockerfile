@@ -21,8 +21,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PORT=8000 \
-    FEVER_DB_PATH=/var/lib/pronoia/fever.db \
-    FEVER_DATA_DIR=/var/lib/pronoia/data \
+    PRONOIA_DB_PATH=/var/lib/pronoia/pronoia.db \
+    PRONOIA_DATA_DIR=/var/lib/pronoia/data \
     PRONOIA_RUNTIME_DIR=/tmp/pronoia \
     XDG_CACHE_HOME=/tmp/pronoia/cache
 

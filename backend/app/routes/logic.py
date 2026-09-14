@@ -367,7 +367,7 @@ async def auto_check(req: LogicCheckRequest) -> LogicCheckResponse:
         for round_no in range(1, 5):
             # 注意：不使用 response_format，让模型自由选择 content 或 tool_calls
             resp = await client.chat.completions.create(
-                model=_cfg.ARK_MODEL,
+                model=_cfg.LLM_MODEL,
                 messages=messages,
                 tools=tool_schema_subset(available) if available else None,
                 max_tokens=2000,
@@ -459,7 +459,7 @@ async def auto_check(req: LogicCheckRequest) -> LogicCheckResponse:
             # 4 轮还没结论 → 强制收尾一次（去掉 tools）
             try:
                 final = await client.chat.completions.create(
-                    model=_cfg.ARK_MODEL,
+                    model=_cfg.LLM_MODEL,
                     messages=messages + [{"role": "user",
                                           "content": "请基于以上工具结果，立即给出最终 JSON 结论。"
                                                      "不要再调用任何工具。只输出 JSON 本身。"}],
@@ -536,8 +536,8 @@ def _llm_client():
         from openai import AsyncOpenAI
         from .. import config
         _CLIENT = AsyncOpenAI(
-            base_url=config.ARK_API_URL,
-            api_key=config.ARK_API_KEY,
+            base_url=config.LLM_BASE_URL,
+            api_key=config.LLM_API_KEY,
             timeout=config.LLM_TIMEOUT,
         )
     return _CLIENT

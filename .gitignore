@@ -29,9 +29,9 @@ __pycache__/
 *.pyd
 
 # SQLite runtime
-backend/fever.db
-backend/fever.db-shm
-backend/fever.db-wal
+backend/pronoia.db
+backend/pronoia.db-shm
+backend/pronoia.db-wal
 *.db
 *.db-shm
 *.db-wal

@@ -18,7 +18,7 @@ from .models import BacktestResult, MarketDataset, QuantBacktestError, utc_now_i
 class QuantStore:
     """Persist datasets, runs, metrics, trades, and chart series in SQLite.
 
-    It can point at Pronoia's existing ``FEVER_DB_PATH``. All table names use a
+    It can point at Pronoia's existing ``PRONOIA_DB_PATH``. All table names use a
     ``quant_`` prefix and never alter ``bt_runs`` or event predictions.
     """
 

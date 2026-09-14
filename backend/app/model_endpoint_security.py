@@ -69,7 +69,7 @@ def validate_secret_env_name(value: Any, *, namespace: str, label: str) -> str:
     """Return a validated, purpose-scoped environment variable name.
 
     User-managed integrations must never be able to reference application
-    credentials (for example ARK/MAAS keys), the share password, PATH, or any
+    credentials (for example LLM/MAAS keys), the share password, PATH, or any
     other process environment variable.  Separate namespaces also prevent a
     data connector from borrowing a strategy credential and vice versa.
     """

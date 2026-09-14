@@ -4,7 +4,7 @@
 - profile → TTL 预设，按数据时效性区分（财报 6h / 行业列表 1h / 资金流 2min）
 - key 由 (skill_name, args, kwargs) 哈希生成；同参数同 TTL 内直接返回缓存
 - 线程安全；LRU 简化版（满容量时按 expire_at 最早淘汰）
-- 支持 `FEVER_CACHE_DISABLE=1` 环境变量整库关闭
+- 支持 `PRONOIA_CACHE_DISABLE=1` 环境变量整库关闭
 - 暴露 `stats()` 与 `clear()` 供 `/api/cache/stats` 与调试使用
 """
 from __future__ import annotations
@@ -77,7 +77,7 @@ class TTLCache:
         self._misses = 0
         self._stores = 0
         self._errors_skipped = 0
-        self._disabled = os.environ.get("FEVER_CACHE_DISABLE", "").strip() in ("1", "true", "yes")
+        self._disabled = os.environ.get("PRONOIA_CACHE_DISABLE", "").strip() in ("1", "true", "yes")
 
     # ---------- introspection ----------
     @property
@@ -142,7 +142,7 @@ class TTLCache:
 
 
 # ----------------------------------------------------------------- singleton
-CACHE = TTLCache(max_size=int(os.environ.get("FEVER_CACHE_MAX", "1024")))
+CACHE = TTLCache(max_size=int(os.environ.get("PRONOIA_CACHE_MAX", "1024")))
 
 
 def set_cache_disabled(v: bool) -> None:
@@ -209,8 +209,8 @@ def cached(profile: str = "default"):
             return rv
 
         # 调试用：暴露 profile / key_fn
-        wrapper.__fever_cache_profile__ = profile  # type: ignore[attr-defined]
-        wrapper.__fever_cache_ttl__ = ttl  # type: ignore[attr-defined]
+        wrapper.__pronoia_cache_profile__ = profile  # type: ignore[attr-defined]
+        wrapper.__pronoia_cache_ttl__ = ttl  # type: ignore[attr-defined]
         return wrapper
 
     return deco

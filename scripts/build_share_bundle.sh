@@ -94,7 +94,7 @@ rsync -a \
   --exclude '/frontend/scripts/' \
   --exclude '/backend/.venv/' \
   --exclude '/backend/venv/' \
-  --exclude '/backend/fever.db*' \
+  --exclude '/backend/pronoia.db*' \
   --exclude '/backend/tests/_e2e_ckpt/' \
   --exclude '/scripts/generate_datasets.py' \
   --exclude '**/__pycache__/' \

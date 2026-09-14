@@ -24,7 +24,7 @@ ENV_REF = "PRONOIA_MODEL_SECRET_DIRECT_TEST"
 def direct_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(dotenv, "load_dotenv", lambda *_args, **_kwargs: False)
     monkeypatch.setenv(ENV_REF, "synthetic-legacy-key")
-    for name in ("ARK_API_KEY", "MAAS_API_KEY", "PRONOIA_SHARE_USER", "PRONOIA_SHARE_PASSWORD"):
+    for name in ("LLM_API_KEY", "MAAS_API_KEY", "PRONOIA_SHARE_USER", "PRONOIA_SHARE_PASSWORD"):
         monkeypatch.setenv(name, "")
 
     from app import config, db

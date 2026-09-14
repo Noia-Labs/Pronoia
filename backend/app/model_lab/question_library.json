@@ -2,7 +2,7 @@
   {
     "id": "pronoia-finance-comprehensive-v1",
     "name": "Pronoia 综合能力题库",
-    "description": "41 道完整评测题，覆盖价值、技术、量化研究、投资教育、券商研究、Agent 可靠性和边界测试。来源：fevertest / FEVER测试题库与评分表.xlsx「测试问题集」（与测试一.xlsx相同）；保留原题干和评分字段。含核心题集中的 17 道精选题。",
+    "description": "41 道完整评测题，覆盖价值、技术、量化研究、投资教育、券商研究、Agent 可靠性和边界测试。来源：pronoiatest / PRONOIA测试题库与评分表.xlsx「测试问题集」（与测试一.xlsx相同）；保留原题干和评分字段。含核心题集中的 17 道精选题。",
     "version": "1",
     "questions": [
       {
@@ -743,7 +743,7 @@
         "priority": "P0"
       }
     ],
-    "previous_description": "42 道完整评测题，覆盖价值、技术、量化研究、投资教育、券商研究、Agent 可靠性和边界测试。来源：fevertest / FEVER测试题库与评分表.xlsx「测试问题集」（与测试一.xlsx相同）；保留原题干和评分字段。含核心题集中的 18 道精选题。",
+    "previous_description": "42 道完整评测题，覆盖价值、技术、量化研究、投资教育、券商研究、Agent 可靠性和边界测试。来源：pronoiatest / PRONOIA测试题库与评分表.xlsx「测试问题集」（与测试一.xlsx相同）；保留原题干和评分字段。含核心题集中的 18 道精选题。",
     "revision": "retire-original-v01-20260908",
     "archived_codes": [
       "V01"
@@ -752,7 +752,7 @@
   {
     "id": "pronoia-common-comparison-v1",
     "name": "Pronoia 共同评测题库",
-    "description": "18 道适合不同 API / Pronoia 路径使用同一口径比较的共同题。来源：fevertest / 测试二.xlsx「共同问题集」（与同类产品测试题库与评分表.xlsx相同）；保留原题干、能力标签和核验依据。题目编号以本题库为作用域。",
+    "description": "18 道适合不同 API / Pronoia 路径使用同一口径比较的共同题。来源：pronoiatest / 测试二.xlsx「共同问题集」（与同类产品测试题库与评分表.xlsx相同）；保留原题干、能力标签和核验依据。题目编号以本题库为作用域。",
     "version": "1",
     "questions": [
       {
@@ -1030,7 +1030,7 @@
   {
     "id": "pronoia-special-capabilities-v1",
     "name": "Pronoia 特色能力题库",
-    "description": "6 道证据图、前瞻预测、策略迭代与多角色协作等专项题。来源：fevertest / 测试二.xlsx「特色能力题」（与同类产品测试题库与评分表.xlsx相同）。适用产品是原题的测试对象提示，FEVER 已更名为 Pronoia；专项结果应单独解读，不与共同题主榜混排。",
+    "description": "6 道证据图、前瞻预测、策略迭代与多角色协作等专项题。来源：pronoiatest / 测试二.xlsx「特色能力题」（与同类产品测试题库与评分表.xlsx相同）。适用产品是原题的测试对象提示，项目现统一使用 Pronoia；专项结果应单独解读，不与共同题主榜混排。",
     "version": "1",
     "questions": [
       {

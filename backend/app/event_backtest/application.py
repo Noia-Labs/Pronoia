@@ -578,7 +578,7 @@ def render_trajectory_md_report(
     A("")
     A("---")
     A("")
-    A(f"*报告由 FEVER team_full runner 自动生成，trajectory 完整数据见 JSON 文件*")
+    A(f"*报告由 PRONOIA team_full runner 自动生成，trajectory 完整数据见 JSON 文件*")
 
     return "\n".join(md)
 

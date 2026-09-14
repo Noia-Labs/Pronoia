@@ -24,7 +24,7 @@ Pronoia 是开源的对话式金融研究工作台：主理人 Agent 调用真�
 ## 快速开始
 
 ```bash
-cp .env.example .env   # 填入 ARK_API_KEY（或任意 OpenAI 兼容端点）
+cp .env.example .env   # 填入 LLM_API_KEY（或任意 OpenAI 兼容端点）
 ./start.sh             # 后端 :8000 + 前端 :5173
 ```
 
@@ -59,7 +59,7 @@ scripts/pronoia bt run --events data/samples/events_cn_stock_10.jsonl \
 │  event_backtest/ 回测引擎 · metrics_registry · arena           │
 └──────────────────────────────┬─────────────────────────────────┘
                                ▼
-                    Ark LLM（OpenAI 兼容）· 公开数据源
+                    LLM（OpenAI 兼容）· 公开数据源
 ```
 
 ## 目录结构
