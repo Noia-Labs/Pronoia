@@ -334,6 +334,7 @@ def init_db() -> None:
                 source_url TEXT,
                 captured_at TEXT,
                 settle_at TEXT,
+                horizon INTEGER NOT NULL DEFAULT 3,
                 status TEXT NOT NULL,
                 prediction_id TEXT,
                 settlement_id TEXT,
@@ -776,6 +777,20 @@ def init_db() -> None:
         cols_items = [r[1] for r in conn.execute("PRAGMA table_info(prospective_items)").fetchall()]
         if "candidate_id" not in cols_items:
             conn.execute("ALTER TABLE prospective_items ADD COLUMN candidate_id TEXT")
+        if "horizon" not in cols_items:
+            conn.execute("ALTER TABLE prospective_items ADD COLUMN horizon INTEGER NOT NULL DEFAULT 3")
+        conn.execute(
+            """UPDATE prospective_items
+               SET horizon = COALESCE(
+                   (SELECT NULLIF(settle_after_days, 0) FROM prospective_runs
+                    WHERE prospective_runs.id = prospective_items.run_id),
+                   3
+               )
+               WHERE run_id IN (
+                   SELECT id FROM prospective_runs
+                   WHERE predictor_config_json NOT LIKE '%\"horizons\"%'
+               )"""
+        )
         conn.execute(
             """CREATE TRIGGER IF NOT EXISTS deny_prospective_prediction_update
                BEFORE UPDATE ON prospective_predictions
@@ -2055,17 +2070,21 @@ def update_prospective_run(run_id: str, *, status: str | None = None, settle_at:
 
 def create_prospective_item(*, run_id: str, event_id: str, canonical_key: str, event: dict,
                             question: str = "", assertion_text: str = "", captured_at: str | None = None,
-                            settle_at: str | None = None, candidate_id: str | None = None) -> dict:
+                            settle_at: str | None = None, candidate_id: str | None = None,
+                            horizon: int | None = None) -> dict:
     iid, ts = new_id(), now_iso()
     with _lock:
         conn = _get_conn()
+        if horizon is None:
+            run_row = conn.execute("SELECT settle_after_days FROM prospective_runs WHERE id=?", (run_id,)).fetchone()
+            horizon = int(run_row["settle_after_days"] or 3) if run_row else 3
         conn.execute(
             "INSERT OR IGNORE INTO prospective_items(id,run_id,event_id,canonical_key,candidate_id,question,assertion_text,"
-            "market,symbol,event_type_l2,event_time,source_url,captured_at,settle_at,status,created_at,updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "market,symbol,event_type_l2,event_time,source_url,captured_at,settle_at,horizon,status,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (iid, run_id, event_id, canonical_key, candidate_id, question, assertion_text, event.get("market"), event.get("symbol"),
              event.get("event_type_l2"), event.get("event_time"), event.get("source_url"), captured_at, settle_at,
-             "pending", ts, ts),
+             max(1, int(horizon)), "pending", ts, ts),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM prospective_items WHERE run_id=? AND canonical_key=?", (run_id, canonical_key)).fetchone()
@@ -2142,7 +2161,7 @@ def get_prospective_item(item_id: str) -> dict | None:
 
 def update_prospective_item(item_id: str, **values: Any) -> dict | None:
     allowed = {"status", "prediction_id", "settlement_id", "actual_label", "actual_value", "is_correct",
-               "resolved_at", "error_message", "captured_at", "settle_at"}
+               "resolved_at", "error_message", "captured_at", "settle_at", "horizon"}
     pairs = [(k, v) for k, v in values.items() if k in allowed]
     if not pairs:
         return get_prospective_item(item_id)

@@ -323,6 +323,7 @@ export interface ProspectiveItemDetail {
     event_type_l2?: string;
     captured_at?: string;
     settle_at?: string;
+    horizon?: number;
     status: string;
     actual_label?: string | null;
     actual_value?: number | null;
