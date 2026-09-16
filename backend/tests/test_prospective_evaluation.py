@@ -53,6 +53,31 @@ def test_prospective_prediction_is_immutable(isolated_db):
         db._get_conn().execute("UPDATE prospective_predictions SET rationale='changed' WHERE id=?", (prediction["id"],))
 
 
+def test_legacy_item_horizon_is_backfilled_without_overwriting_multi_horizon_items(isolated_db):
+    legacy_run = db.create_prospective_run(
+        name="legacy", capture_at="2026-01-01T00:00:00+00:00", settle_after_days=1,
+    )
+    multi_run = db.create_prospective_run(
+        name="multi", capture_at="2026-01-01T00:00:00+00:00", settle_after_days=5,
+        predictor_config={"horizons": [1, 2, 3, 4, 5]},
+    )
+    event = {"market": "CN", "symbol": "600519", "event_type_l2": "股份回购",
+             "event_time": "2025-12-31", "source_url": "https://example.com"}
+    legacy_item = db.create_prospective_item(
+        run_id=legacy_run["id"], event_id="legacy-event", canonical_key="legacy-key", event=event,
+    )
+    multi_item = db.create_prospective_item(
+        run_id=multi_run["id"], event_id="multi-event-t1", canonical_key="multi-key", event=event, horizon=1,
+    )
+    db._get_conn().execute("UPDATE prospective_items SET horizon=3 WHERE id=?", (legacy_item["id"],))
+    db._get_conn().commit()
+
+    db.init_db()
+
+    assert db.get_prospective_item(legacy_item["id"])["horizon"] == 1
+    assert db.get_prospective_item(multi_item["id"])["horizon"] == 1
+
+
 def test_prospective_analysis_trace_is_append_only(isolated_db):
     run = db.create_prospective_run(name="trace", capture_at="2026-01-01T00:00:00+00:00", settle_after_days=1)
     item = db.create_prospective_item(
@@ -88,6 +113,18 @@ def test_create_run_uses_one_trade_day_period_for_prediction_and_settlement(isol
     ))
     assert run["settle_after_days"] == 5
     assert run["metric_config"]["horizon"] == 5
+
+
+def test_create_run_normalizes_multi_horizon_and_allows_500_companies(isolated_db):
+    run = create_run(CreateProspectiveRunRequest(
+        name="five-horizons", capture_at="2026-09-07T16:00:00+08:00", settle_after_days=5,
+        source_config={"source": "sample", "selection_count": 500},
+        predictor_config={"horizons": [5, 1, 3, 2, 4, 1]},
+        metric_config={"settlement_mode": "after_trade_days", "epsilon": 0.005},
+    ))
+
+    assert run["source_config"]["selection_count"] == 500
+    assert run["predictor_config"]["horizons"] == [1, 2, 3, 4, 5]
 
 
 def test_lookback_window_skips_weekend_and_is_chronological():
@@ -174,6 +211,38 @@ def test_selector_falls_back_deterministically_when_model_returns_no_ids(monkeyp
     assert "回退选择" in decisions["c1"]["reason"]
 
 
+def test_t2_prediction_stays_local_to_prospective_protocol(monkeypatch):
+    event = EventRecord.from_dict({
+        "event_id": "t2-local", "market": "CN", "symbol": "600519",
+        "event_time": "2026-09-07T17:12:00+08:00", "event_type_l2": "股份回购",
+        "title": "近期回购", "event_text": "公司公告回购计划",
+        "source_url": "https://example.com/t2-local",
+    })
+    prompts = []
+
+    async def fake_complete(system, user, **kwargs):
+        prompts.append((system, user))
+        return {"prediction_status": "available", "pred_direction": "up", "confidence": 0.7,
+                "rationale": "基于冻结公告判断", "expected_return_pct": 1.2}
+
+    async def shared_engine_must_not_run(*args, **kwargs):
+        raise AssertionError("T+2 must not widen or call the shared Arena protocol")
+
+    monkeypatch.setattr(service, "complete_json", fake_complete)
+    monkeypatch.setattr(service, "run_team_prompt", shared_engine_must_not_run)
+    monkeypatch.setattr(config, "LLM_RPS_INTERVAL_S", 0, raising=False)
+    predictions = asyncio.run(service._run_prospective_predictions(
+        [event], horizon=2, run_id="run-t2", model_version="model",
+        concurrency=1, system_prompt_variant="v0",
+    ))
+
+    assert len(predictions) == 1
+    assert predictions[0].horizon == "t2"
+    assert predictions[0].pred_direction == "up"
+    assert "T+2" in prompts[0][0]
+    assert '"target_horizon": "T+2"' in prompts[0][1]
+
+
 def test_capture_uses_separate_candidate_and_analysis_windows_and_records_trace(isolated_db, monkeypatch):
     event_recent = EventRecord.from_dict({
         "event_id": "recent", "market": "CN", "symbol": "600519", "event_time": "2026-09-04",
@@ -196,7 +265,7 @@ def test_capture_uses_separate_candidate_and_analysis_windows_and_records_trace(
         return candidates[:1], {candidates[0]["id"]: {"score": 0.9, "reason": "信息明确", "model_version": "selector", "prompt_version": "selector-v1"}}
 
     async def fake_predict(events, **kwargs):
-        prediction_horizons.append(kwargs["target_horizon"])
+        prediction_horizons.append(kwargs["horizon"])
         event = list(events)[0]
         return [TeamPrediction(event_id=event.event_id, pred_direction="up", run_id=kwargs["run_id"],
                                model_version="model", confidence=0.7, rationale="基于冻结证据")]
@@ -205,25 +274,30 @@ def test_capture_uses_separate_candidate_and_analysis_windows_and_records_trace(
     monkeypatch.setattr(service, "_now", lambda: frozen_now)
     monkeypatch.setattr(service, "discover_events", fake_discover)
     monkeypatch.setattr(service, "_select_candidates", fake_select)
-    monkeypatch.setattr(service, "run_team_prompt", fake_predict)
+    monkeypatch.setattr(service, "_run_prospective_predictions", fake_predict)
     monkeypatch.setattr(service, "_as_of_market_features", lambda *args: {"asset": {}, "benchmark": {}, "car": {}, "data_quality": {}})
     run = db.create_prospective_run(
         name="dual-window", capture_at=frozen_now.isoformat(), settle_after_days=1,
         source_config={"source": "cn_announcements", "candidate_lookback_trade_days": 3,
                        "analysis_lookback_trade_days": 20, "selection_count": 1,
                        "evidence_cutoff_policy": "before_capture_date"},
+        predictor_config={"horizons": [1, 2, 3, 4, 5]},
         metric_config={"horizon": 1},
     )
     asyncio.run(service.capture_run(run["id"]))
     detail = service.detail(run["id"])
     assert windows == [3, 20]
-    assert prediction_horizons == [1]
-    assert len(detail["items"]) == 1
-    assert len(detail["items"][0]["evidence"]) == 2
-    assert [row["stage"] for row in detail["items"][0]["trace"]] == [
-        "candidate_discovered", "evidence_hydrated", "evidence_frozen",
-        "market_features_computed", "model_input_frozen", "prediction_generated",
-    ]
+    assert prediction_horizons == [1, 2, 3, 4, 5]
+    assert [row["item"]["horizon"] for row in detail["items"]] == [1, 2, 3, 4, 5]
+    assert detail["run"]["total_items"] == 5
+    assert detail["run"]["frozen_items"] == 5
+    assert set(detail["metrics"]["by_horizon"]) == {"1", "2", "3", "4", "5"}
+    for row in detail["items"]:
+        assert len(row["evidence"]) == 2
+        assert [entry["stage"] for entry in row["trace"]] == [
+            "candidate_discovered", "evidence_hydrated", "evidence_frozen",
+            "market_features_computed", "model_input_frozen", "prediction_generated",
+        ]
 
 
 def test_settle_before_result_available_returns_pending_without_duplicate_attempts(isolated_db, monkeypatch):
@@ -290,3 +364,51 @@ def test_settle_uses_shared_price_route_and_is_idempotent_after_resolution(isola
     assert result["settlement_summary"]["accuracy"] == 1.0
     assert again["status"] == "completed"
     assert len(db.list_prospective_settlements(item["id"])) == 1
+
+
+def test_settle_reports_due_horizon_while_later_horizon_waits(isolated_db, monkeypatch):
+    import pandas as pd
+
+    run = db.create_prospective_run(
+        name="staged-settlement", capture_at="2026-09-07T16:17:00+08:00", settle_after_days=5,
+        predictor_config={"horizons": [1, 5]}, metric_config={"horizon": 5, "epsilon": 0.005},
+    )
+    db.update_prospective_run(
+        run["id"], status="waiting", target_settle_at="2026-09-14T16:17:00+08:00",
+        settle_at="2026-09-14T16:17:00+08:00",
+    )
+    event = {"market": "CN", "symbol": "600519", "event_type_l2": "股份回购",
+             "event_time": "2026-09-07T16:17:00+08:00", "source_url": "https://example.com"}
+    for horizon, settle_at in ((1, "2026-09-08T16:17:00+08:00"), (5, "2026-09-14T16:17:00+08:00")):
+        item = db.create_prospective_item(
+            run_id=run["id"], event_id=f"event-t{horizon}", canonical_key=f"key-t{horizon}",
+            event=event, captured_at="2026-09-07T16:17:00+08:00", settle_at=settle_at,
+            horizon=horizon,
+        )
+        db.add_prospective_prediction(
+            item_id=item["id"], pred_direction="up", confidence=0.7, rationale="r", raw_prediction={},
+            model_version="m", prompt_version="p", adapter_version="a", git_commit="g",
+            as_of_at="2026-09-07T16:17:00+08:00", evidence_hash="h",
+        )
+        db.update_prospective_item(item["id"], status="frozen")
+
+    dates = [dt.date(2026, 9, 7), dt.date(2026, 9, 8)]
+    asset = pd.Series([100.0, 110.0], index=dates)
+    benchmark = pd.Series([100.0, 105.0], index=dates)
+    calls = []
+    monkeypatch.setattr(service, "_now", lambda: _parse_iso("2026-09-08T16:00:00+08:00"))
+    monkeypatch.setattr(
+        service, "_fetch_closes_with_status",
+        lambda item, end: (calls.append(item["horizon"]) or (asset, benchmark, {})),
+    )
+
+    result = service.settle_run(run["id"], force=True)
+    metrics = service.detail(run["id"])["metrics"]
+
+    assert calls == [1]
+    assert result["status"] == "waiting"
+    assert result["settled_items"] == 1
+    assert metrics["by_horizon"]["1"]["accuracy"] == 1.0
+    assert metrics["by_horizon"]["1"]["coverage"] == 1.0
+    assert metrics["by_horizon"]["5"]["accuracy"] is None
+    assert metrics["by_horizon"]["5"]["coverage"] == 0.0

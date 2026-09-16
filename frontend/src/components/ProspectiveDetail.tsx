@@ -46,6 +46,36 @@ function ConfigSummary({ run }: { run: ProspectiveDetailResponse["run"] }) {
   </section>;
 }
 
+function HorizonMetrics({ data }: { data: ProspectiveDetailResponse }) {
+  const byHorizon = (data.metrics.by_horizon ?? {}) as Record<string, {
+    horizon?: number;
+    n_predicted?: number;
+    n_settled?: number;
+    n_correct?: number;
+    accuracy?: number | null;
+    coverage?: number | null;
+  }>;
+  const rows = Object.values(byHorizon).sort((a, b) => Number(a.horizon ?? 0) - Number(b.horizon ?? 0));
+  if (!rows.length) return null;
+  return <section className="mb-5 border-y border-edge bg-card px-4 py-4">
+    <div className="mb-3 flex items-center justify-between gap-3">
+      <h3 className="text-[12px] font-medium">分阶段准确率</h3>
+      <span className="text-right font-mono text-[9px] text-mute">真实行情结算后逐阶段更新</span>
+    </div>
+    <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
+      {rows.map(row => <div key={row.horizon} className="border border-edge bg-paper px-3 py-2">
+        <div className="font-mono text-[10px] text-mute">T+{row.horizon}</div>
+        <div className="mt-1 font-mono text-[19px] font-semibold">
+          {row.accuracy == null ? "--" : `${(Number(row.accuracy) * 100).toFixed(1)}%`}
+        </div>
+        <div className="mt-1 text-[9px] text-mute">
+          {Number(row.n_correct ?? 0)}/{Number(row.n_settled ?? 0)} 命中 · {Number(row.n_predicted ?? 0)} 条 · 覆盖 {(Number(row.coverage ?? 0) * 100).toFixed(0)}%
+        </div>
+      </div>)}
+    </div>
+  </section>;
+}
+
 function MarketFeatures({ snapshot }: { snapshot?: Record<string, unknown> }) {
   const features = snapshot?.market_features as Record<string, Record<string, unknown>> | undefined;
   if (!features) return null;
@@ -134,6 +164,7 @@ export default function ProspectiveDetail() {
       {(error || run.error_message) && <div className="mb-4 flex items-start gap-2 rounded-md bg-rise/10 px-3 py-2 text-[12px] text-rise"><AlertCircle size={14} className="mt-0.5 shrink-0" />{error || run.error_message}</div>}
       {notice && <div className="mb-4 rounded-md bg-jade-soft px-3 py-2 text-[12px] text-jade">{notice}</div>}
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-5">{[["候选公司", candidates.length],["入选公司", candidates.filter(selected).length],["冻结预测", metricValue("n_predicted")],["已结算", metricValue("n_settled")],["准确率", metrics.accuracy == null ? "-" : `${Math.round(Number(metrics.accuracy) * 100)}%`]].map(([label, value]) => <div key={String(label)} className="border-t-2 border-edge bg-card px-3 py-3"><div className="text-[11px] text-mute">{label}</div><div className="mt-1 text-[20px] font-semibold">{value}</div></div>)}</div>
+      <HorizonMetrics data={data} />
       <ConfigSummary run={run} />
       <section className="mb-5 grid grid-cols-2 gap-3 border-y border-edge bg-card px-4 py-3 text-[12px] sm:grid-cols-5"><div><span className="text-mute">结算进度</span><div className="mt-1 font-medium">{summary?.settled ?? 0}/{summary?.total ?? data.items.length}</div></div><div><span className="text-mute">等待行情</span><div className="mt-1 font-medium">{summary?.waiting ?? 0}</div></div><div><span className="text-mute">失败</span><div className="mt-1 font-medium">{summary?.failed ?? 0}</div></div><div><span className="text-mute">覆盖率</span><div className="mt-1 font-medium">{`${Math.round(Number(summary?.coverage ?? 0) * 100)}%`}</div></div><div><span className="text-mute">结果可用时间</span><div className="mt-1 font-medium">{formatDate(run.result_available_at || summary?.result_available_at)}</div></div></section>
       <section className="mb-5 overflow-hidden rounded-card border border-edge bg-card">

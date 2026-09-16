@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import hashlib
 import json
@@ -21,9 +22,20 @@ from ..event_backtest.collector import (
     collect_macro_calendar_seeds,
     collect_us_sec_seeds,
 )
-from ..event_backtest.engine import run_team_prompt
+from ..event_backtest.engine import (
+    SYSTEM_PROMPT_V7_UNIFIED,
+    normalize_event_prediction_output,
+    run_team_prompt,
+)
+from ..event_backtest.market import resolve_benchmark
 from ..skills.price_data import PriceFetchError, fetch_price_frame
-from ..event_backtest.models import EventRecord
+from ..event_backtest.models import (
+    EventRecord,
+    TeamPrediction,
+    return_forecast_contract,
+    sanitize_event_facts,
+    sanitize_pre_event_features,
+)
 from ..llm import complete_json
 
 
@@ -285,7 +297,112 @@ def _settlement_target(run: dict[str, Any], captured: dt.datetime) -> dt.datetim
     if str(cfg.get("settlement_mode") or "after_trade_days") == "absolute_trade_date" and cfg.get("settlement_trade_date"):
         target_date = dt.date.fromisoformat(str(cfg["settlement_trade_date"])[:10])
         return captured.replace(year=target_date.year, month=target_date.month, day=target_date.day)
-    return _add_trading_days(captured, _settlement_horizon(run))
+    return _add_trading_days(captured, max(_configured_horizons(run)))
+
+
+def _configured_horizons(run: dict[str, Any]) -> list[int]:
+    """Return the immutable forecast horizons configured for a run."""
+    predictor_config = run.get("predictor_config") or {}
+    raw = predictor_config.get("horizons") or (run.get("metric_config") or {}).get("horizons")
+    if raw is None:
+        return [_settlement_horizon(run)]
+    if isinstance(raw, str):
+        raw = re.split(r"[,\s]+", raw)
+    values = sorted({int(value) for value in raw if str(value).strip()})
+    return values or [_settlement_horizon(run)]
+
+
+def _prospective_event_prompt(event: EventRecord, horizon: int) -> str:
+    packet = {
+        "as_of_packet": {
+            "market": event.market,
+            "symbol": event.symbol,
+            "event_time": event.event_time,
+            "available_time": event.available_time or event.event_time,
+            "occurred_at": event.occurred_at,
+            "event_type_l2": event.event_type_l2,
+            "benchmark": resolve_benchmark(event),
+            "sector_etf": event.sector_etf,
+            "title": event.title,
+            "event_text": event.event_text,
+            "source_url": event.source_url,
+            "event_facts": sanitize_event_facts(event.event_facts),
+            "pre_event_features": sanitize_pre_event_features(event.pre_event_features),
+            "constraints": {
+                "strict_as_of": True,
+                "web_search_allowed": False,
+                "future_information_allowed": False,
+                "must_predict": False,
+                "target_horizon": f"T+{horizon}",
+                "return_forecast_contract": return_forecast_contract(f"t{horizon}"),
+                "neutral_allowed": False,
+                "prediction_statuses": ["available", "insufficient_data"],
+            },
+        }
+    }
+    return json.dumps(packet, ensure_ascii=False, indent=2)
+
+
+async def _run_prospective_predictions(
+    events: list[EventRecord],
+    *,
+    horizon: int,
+    run_id: str,
+    model_version: str,
+    concurrency: int,
+    system_prompt_variant: str,
+) -> list[TeamPrediction]:
+    """Run prospective-only T+1..T+5 forecasts without widening Arena's protocol."""
+    if horizon in {1, 3, 5}:
+        return await run_team_prompt(
+            events,
+            run_id=run_id,
+            model_version=model_version,
+            concurrency=concurrency,
+            system_prompt_variant=system_prompt_variant,
+            target_horizon=f"t{horizon}",
+        )
+
+    system_prompt = SYSTEM_PROMPT_V7_UNIFIED.replace(
+        "评估窗口 T+3（事件后3个交易日）",
+        f"评估窗口 T+{horizon}（事件后{horizon}个交易日）",
+    )
+    semaphore = asyncio.Semaphore(max(1, int(concurrency or 1)))
+    rate_limit_lock = asyncio.Lock()
+    next_start = 0.0
+
+    async def predict_one(event: EventRecord) -> TeamPrediction:
+        nonlocal next_start
+        async with semaphore:
+            async with rate_limit_lock:
+                loop = asyncio.get_running_loop()
+                wait_seconds = max(0.0, next_start - loop.time())
+                if wait_seconds:
+                    await asyncio.sleep(wait_seconds)
+                next_start = loop.time() + max(0.0, float(getattr(config, "LLM_RPS_INTERVAL_S", 1.15)))
+            raw = await complete_json(system_prompt, _prospective_event_prompt(event, horizon))
+        normalized = normalize_event_prediction_output(raw)
+        errors = list(normalized["errors"])
+        return TeamPrediction(
+            event_id=event.event_id,
+            pred_direction=normalized["direction"],
+            run_id=run_id,
+            model_version=model_version,
+            confidence=normalized["confidence"],
+            rationale=normalized["rationale"],
+            abstain=normalized["abstain"],
+            horizon=f"t{horizon}",
+            expected_return_pct=normalized["expected_return_pct"],
+            strategy_metadata={
+                "prediction_status": normalized["prediction_status"],
+                "completion_quality": "invalid" if errors else "valid",
+                "validation": {"valid": not errors, "errors": errors},
+                "output_validation_errors": errors,
+                "prospective_horizon": horizon,
+            },
+        )
+
+    return list(await asyncio.gather(*(predict_one(event) for event in events)))
 
 
 def _settlement_horizon(run: dict[str, Any]) -> int:
@@ -390,7 +507,8 @@ async def capture_run(run_id: str) -> dict[str, Any]:
         )
         saved["representative"] = candidate["representative"]
         saved_candidates.append(saved)
-    selection_count = max(1, int(source_cfg.get("selection_count") or source_cfg.get("max_items") or 5))
+    horizons = _configured_horizons(run)
+    selection_count = max(1, min(int(source_cfg.get("selection_count") or source_cfg.get("max_items") or 5), 500))
     predictor_cfg = run.get("predictor_config") or {}
     selected, decisions = await _select_candidates(saved_candidates, selection_count, predictor_cfg)
     analysis_source_cfg = dict(source_cfg)
@@ -418,10 +536,11 @@ async def capture_run(run_id: str) -> dict[str, Any]:
             model_version=decision["model_version"], prompt_version=decision["prompt_version"],
         )
     settle_at = _iso(_settlement_target(run, captured))
-    initial_available_at = _iso(_result_available_at(_parse_iso(settle_at), selected[0]["market"] if selected else "CN"))
+    first_settle_at = _iso(_add_trading_days(captured, min(horizons)))
+    initial_available_at = _iso(_result_available_at(_parse_iso(first_settle_at), selected[0]["market"] if selected else "CN"))
     evidence_dates = [str(ev.get("published_at"))[:10] for candidate in selected for ev in candidate.get("evidence", []) if ev.get("published_at")]
     db.update_prospective_run(
-        run_id, total_items=len(selected), candidate_items=len(saved_candidates), selected_items=len(selected),
+        run_id, total_items=len(selected) * len(horizons), candidate_items=len(saved_candidates), selected_items=len(selected),
         settle_at=settle_at, target_settle_at=settle_at,
         result_available_at=initial_available_at,
         next_check_at=initial_available_at,
@@ -442,72 +561,74 @@ async def capture_run(run_id: str) -> dict[str, Any]:
             "announcement_timeline": candidate.get("evidence") or [],
             "market_features": market_features,
         }
-        # The forecast starts when evidence is frozen, not on the older announcement date.
-        event = replace(
-            source_event,
-            event_id=f"live_{run_id}_{source_event.market.lower()}_{source_event.symbol}",
-            event_time=captured_at,
-            event_text=json.dumps(context_packet, ensure_ascii=False, sort_keys=True)[:24000],
-        )
-        key = _sha({"candidate_id": candidate["id"], "captured_at": captured_at})
-        item = db.create_prospective_item(
-            run_id=run_id, event_id=event.event_id, canonical_key=key, event=_event_dict(event),
-            assertion_text=(
-                f"基于最近公告，预测 {event.symbol} 从冻结时点至指定结算交易日的超额收益方向"
-                if str((run.get("metric_config") or {}).get("settlement_mode") or "after_trade_days") == "absolute_trade_date"
-                else f"基于最近公告，预测 {event.symbol} 从冻结时点起的 T+{_settlement_horizon(run)} 超额收益方向"
-            ),
-            captured_at=captured_at, settle_at=settle_at, candidate_id=candidate["id"],
-        )
-        item_pairs.append((item, event, candidate.get("evidence") or []))
-        db.add_prospective_analysis_trace(
-            run_id=run_id, item_id=item["id"], candidate_id=candidate["id"], sequence_no=3,
-            stage="evidence_frozen", stage_title="证据已冻结", as_of_at=captured_at,
-            output_snapshot={"evidence_count": len(candidate.get("evidence") or []),
-                             "cutoff_at": _iso(discovery_cutoff), "policy": evidence_policy},
-            evidence_refs=[ev.get("source_url") for ev in candidate.get("evidence") or []],
-            trace_version="v2",
-        )
-        db.add_prospective_analysis_trace(
-            run_id=run_id, item_id=item["id"], candidate_id=candidate["id"], sequence_no=5,
-            stage="model_input_frozen", stage_title="模型输入已冻结", as_of_at=captured_at,
-            input_snapshot=context_packet, output_snapshot={"event_id": event.event_id},
-            evidence_refs=[ev.get("source_url") for ev in candidate.get("evidence") or []],
-            model_version=str(predictor_cfg.get("model_version") or "prospective-team-prompt-v1"),
-            prompt_version=str(predictor_cfg.get("prompt_version") or "as-of-v1"), trace_version="v2",
-        )
-        db.add_prospective_analysis_trace(
-            run_id=run_id, item_id=item["id"], candidate_id=candidate["id"], sequence_no=1,
-            stage="candidate_discovered", stage_title="候选公司入选", as_of_at=captured_at,
-            output_snapshot={"selection_rank": selected.index(candidate) + 1,
-                             "selection_score": candidate.get("selection_decision", {}).get("score"),
-                             "selection_reason": candidate.get("selection_decision", {}).get("reason"),
-                             "event_count": candidate.get("event_count")}, trace_version="v2",
-        )
-        db.add_prospective_analysis_trace(
-            run_id=run_id, item_id=item["id"], candidate_id=candidate["id"], sequence_no=2,
-            stage="evidence_hydrated", stage_title="历史证据补全", as_of_at=captured_at,
-            output_snapshot={"evidence_count": len(candidate.get("evidence") or []),
-                             "analysis_lookback_trade_days": analysis_days},
-            evidence_refs=[ev.get("source_url") for ev in candidate.get("evidence") or []], trace_version="v2",
-        )
-        db.add_prospective_analysis_trace(
-            run_id=run_id, item_id=item["id"], candidate_id=candidate["id"], sequence_no=4,
-            stage="market_features_computed", stage_title="行情特征计算", as_of_at=captured_at,
-            output_snapshot=market_features, trace_version="v2",
-        )
+        for horizon in horizons:
+            horizon_context = {**context_packet, "target_horizon": horizon}
+            horizon_settle_at = _iso(_add_trading_days(captured, horizon))
+            event = replace(
+                source_event,
+                event_id=f"live_{run_id}_{source_event.market.lower()}_{source_event.symbol}_t{horizon}",
+                event_time=captured_at,
+                event_text=json.dumps(horizon_context, ensure_ascii=False, sort_keys=True)[:24000],
+            )
+            key = _sha({"candidate_id": candidate["id"], "captured_at": captured_at, "horizon": horizon})
+            item = db.create_prospective_item(
+                run_id=run_id, event_id=event.event_id, canonical_key=key, event=_event_dict(event),
+                assertion_text=f"基于最近公告，预测 {event.symbol} 从冻结时点起的 T+{horizon} 超额收益方向",
+                captured_at=captured_at, settle_at=horizon_settle_at,
+                candidate_id=candidate["id"], horizon=horizon,
+            )
+            item_pairs.append((item, event, candidate.get("evidence") or []))
+            trace_args = {
+                "run_id": run_id,
+                "item_id": item["id"],
+                "candidate_id": candidate["id"],
+                "as_of_at": captured_at,
+                "trace_version": "v2",
+            }
+            db.add_prospective_analysis_trace(
+                **trace_args, sequence_no=1, stage="candidate_discovered", stage_title="候选公司入选",
+                output_snapshot={"selection_rank": selected.index(candidate) + 1,
+                                 "selection_score": candidate.get("selection_decision", {}).get("score"),
+                                 "selection_reason": candidate.get("selection_decision", {}).get("reason"),
+                                 "event_count": candidate.get("event_count")},
+            )
+            db.add_prospective_analysis_trace(
+                **trace_args, sequence_no=2, stage="evidence_hydrated", stage_title="历史证据补全",
+                output_snapshot={"evidence_count": len(candidate.get("evidence") or []),
+                                 "analysis_lookback_trade_days": analysis_days},
+                evidence_refs=[ev.get("source_url") for ev in candidate.get("evidence") or []],
+            )
+            db.add_prospective_analysis_trace(
+                **trace_args, sequence_no=3, stage="evidence_frozen", stage_title="证据已冻结",
+                output_snapshot={"evidence_count": len(candidate.get("evidence") or []),
+                                 "cutoff_at": _iso(discovery_cutoff), "policy": evidence_policy},
+                evidence_refs=[ev.get("source_url") for ev in candidate.get("evidence") or []],
+            )
+            db.add_prospective_analysis_trace(
+                **trace_args, sequence_no=4, stage="market_features_computed", stage_title="行情特征计算",
+                output_snapshot=market_features,
+            )
+            db.add_prospective_analysis_trace(
+                **trace_args, sequence_no=5, stage="model_input_frozen", stage_title="模型输入已冻结",
+                input_snapshot=horizon_context, output_snapshot={"event_id": event.event_id},
+                evidence_refs=[ev.get("source_url") for ev in candidate.get("evidence") or []],
+                model_version=str(predictor_cfg.get("model_version") or "prospective-team-prompt-v1"),
+                prompt_version=str(predictor_cfg.get("prompt_version") or "as-of-v1"),
+            )
 
     model_version = str(predictor_cfg.get("model_version") or "prospective-team-prompt-v1")
     prompt_version = str(predictor_cfg.get("prompt_version") or "as-of-v1")
     concurrency = max(1, min(int(predictor_cfg.get("concurrency") or 2), 4))
-    predictions = await run_team_prompt(
-        [event for _, event, _ in item_pairs],
-        run_id=run_id,
-        model_version=model_version,
-        concurrency=concurrency,
-        system_prompt_variant=str(predictor_cfg.get("prompt_variant") or "v0"),
-        target_horizon=_settlement_horizon(run),
-    )
+    predictions = []
+    for horizon in horizons:
+        predictions.extend(await _run_prospective_predictions(
+            [event for item, event, _ in item_pairs if int(item["horizon"]) == horizon],
+            horizon=horizon,
+            run_id=run_id,
+            model_version=model_version,
+            concurrency=concurrency,
+            system_prompt_variant=str(predictor_cfg.get("prompt_variant") or "v0"),
+        ))
     by_event = {p.event_id: p for p in predictions}
     frozen = 0
     for item, event, frozen_evidence in item_pairs:
@@ -562,8 +683,8 @@ async def capture_run(run_id: str) -> dict[str, Any]:
         ) or run
     status = "waiting" if frozen == len(item_pairs) else ("partial" if frozen else "failed")
     warning = ""
-    if len(item_pairs) < selection_count:
-        warning = f"候选公司不足：配置选择 {selection_count} 家，实际选择 {len(item_pairs)} 家"
+    if len(selected) < selection_count:
+        warning = f"候选公司不足：配置选择 {selection_count} 家，实际选择 {len(selected)} 家"
     return db.update_prospective_run(run_id, status=status, frozen_items=frozen, error_message=warning) or run
 
 
@@ -650,6 +771,7 @@ def _forward_return(closes: Any, captured_at: str, market: str, horizon: int,
 
 
 def _metrics(run_id: str) -> dict[str, Any]:
+    run = db.get_prospective_run(run_id) or {}
     items = db.list_prospective_items(run_id)
     preds = [db.get_latest_prospective_prediction(i["id"]) for i in items]
     rows = [(i, p) for i, p in zip(items, preds) if p]
@@ -665,8 +787,36 @@ def _metrics(run_id: str) -> dict[str, Any]:
         key = f"{lo:.1f}-{lo + 0.1:.1f}"
         b = buckets.setdefault(key, {"n": 0, "correct": 0, "accuracy": None})
         b["n"] += 1; b["correct"] += int(pred["pred_direction"] == item["actual_label"]); b["accuracy"] = b["correct"] / b["n"]
+
+    def wilson(k: int, total: int) -> dict[str, float | None]:
+        if not total:
+            return {"lower": None, "upper": None}
+        z = 1.959963984540054
+        phat = k / total
+        denom = 1 + z * z / total
+        centre = (phat + z * z / (2 * total)) / denom
+        margin = z * ((phat * (1 - phat) / total + z * z / (4 * total * total)) ** 0.5) / denom
+        return {"lower": max(0.0, centre - margin), "upper": min(1.0, centre + margin)}
+
+    by_horizon: dict[str, dict[str, Any]] = {}
+    for item, _pred in rows:
+        horizon = max(1, int(item.get("horizon") or _settlement_horizon(run)))
+        bucket = by_horizon.setdefault(str(horizon), {
+            "horizon": horizon, "n_predicted": 0, "n_settled": 0, "n_correct": 0,
+        })
+        bucket["n_predicted"] += 1
+    for item, pred in settled:
+        horizon = max(1, int(item.get("horizon") or _settlement_horizon(run)))
+        bucket = by_horizon[str(horizon)]
+        bucket["n_settled"] += 1
+        bucket["n_correct"] += int(pred["pred_direction"] == item["actual_label"])
+    for bucket in by_horizon.values():
+        bucket["accuracy"] = bucket["n_correct"] / bucket["n_settled"] if bucket["n_settled"] else None
+        bucket["coverage"] = bucket["n_settled"] / bucket["n_predicted"] if bucket["n_predicted"] else 0.0
+        bucket["wilson"] = wilson(bucket["n_correct"], bucket["n_settled"])
     return {"n_predicted": n, "n_settled": len(settled), "n_correct": correct, "accuracy": accuracy,
-            "coverage": coverage, "confidence_buckets": buckets}
+            "coverage": coverage, "by_horizon": by_horizon,
+            "wilson": wilson(correct, len(settled)), "confidence_buckets": buckets}
 
 
 def _settlement_summary(run_id: str, *, message: str = "") -> dict[str, Any]:
@@ -688,28 +838,30 @@ def settle_run(run_id: str, *, force: bool = False) -> dict[str, Any]:
     run = db.get_prospective_run(run_id)
     if not run:
         raise ValueError("prospective run not found")
-    if not force and run.get("settle_at") and _parse_iso(run["settle_at"]) > _now():
-        return run
     cfg = run.get("metric_config") or {}
-    horizon = _settlement_horizon(run)
     epsilon = float(cfg.get("epsilon") or 0.005)
     settlement_mode = str(cfg.get("settlement_mode") or "after_trade_days")
     target_date = None
     if settlement_mode == "absolute_trade_date" and cfg.get("settlement_trade_date"):
         target_date = dt.date.fromisoformat(str(cfg["settlement_trade_date"])[:10])
     items_before = db.list_prospective_items(run_id)
-    available_at = _run_result_available_at(run, items_before)
     now = _now()
-    if now < available_at:
-        reason = f"目标交易日尚未收盘，预计 {available_at.isoformat()} 后可结算"
-        updated = db.update_prospective_run(run_id, status="waiting", result_available_at=_iso(available_at), next_check_at=_iso(available_at)) or run
-        updated["settlement_summary"] = _settlement_summary(run_id, message=reason)
-        return updated
-    db.update_prospective_run(run_id, status="settling", result_available_at=_iso(available_at))
+    pending_available_at: list[dt.datetime] = []
+    db.update_prospective_run(run_id, status="settling")
     for item in items_before:
         if item.get("status") not in {"frozen", "waiting", "insufficient"}:
             continue
         try:
+            horizon = max(1, int(item.get("horizon") or _settlement_horizon(run)))
+            item_target = _parse_iso(str(item.get("settle_at") or _iso(_add_trading_days(now, horizon))))
+            item_available_at = _result_available_at(item_target, str(item.get("market") or "CN"))
+            if now < item_available_at:
+                pending_available_at.append(item_available_at)
+                db.update_prospective_item(
+                    item["id"], status="waiting",
+                    error_message=f"T+{horizon} 目标交易日尚未收盘，预计 {item_available_at.isoformat()} 后可结算",
+                )
+                continue
             end = _now().date()
             asset, benchmark, fetch_errors = _fetch_closes_with_status(item, end)
             asset_return, base_date, actual_date = _forward_return(
@@ -769,12 +921,19 @@ def settle_run(run_id: str, *, force: bool = False) -> dict[str, Any]:
     items = db.list_prospective_items(run_id)
     frozen = sum(1 for i in items if i.get("status") in {"frozen", "waiting", "settled", "insufficient"})
     settled = sum(1 for i in items if i.get("status") == "settled")
-    has_waiting = any(i.get("status") == "waiting" for i in items)
+    has_waiting = any(i.get("status") in {"frozen", "waiting", "insufficient"} for i in items)
     status = "completed" if settled == len(items) and items else ("waiting" if has_waiting else ("partial" if settled or frozen else "failed"))
-    next_check = None if status == "completed" else _iso(max(_now() + dt.timedelta(hours=1), available_at))
-    updated = db.update_prospective_run(run_id, status=status, next_check_at=next_check, frozen_items=frozen, settled_items=settled,
+    next_available = min(pending_available_at) if pending_available_at else None
+    next_check = None if status == "completed" else _iso(next_available or (_now() + dt.timedelta(hours=1)))
+    updated = db.update_prospective_run(run_id, status=status, result_available_at=_iso(next_available) if next_available else None,
+                                        next_check_at=next_check, frozen_items=frozen, settled_items=settled,
                                         correct_items=int(metrics.get("n_correct") or 0)) or run
-    message = "结算完成" if status == "completed" else f"本次结算 {settled}/{len(items)} 条，剩余结果等待行情源更新"
+    if status == "completed":
+        message = "结算完成"
+    elif pending_available_at and settled == 0:
+        message = f"目标交易日尚未收盘，预计 {min(pending_available_at).isoformat()} 后可结算"
+    else:
+        message = f"本次结算 {settled}/{len(items)} 条，剩余结果等待行情源更新"
     updated["settlement_summary"] = _settlement_summary(run_id, message=message)
     return updated
 

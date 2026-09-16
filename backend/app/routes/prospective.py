@@ -42,7 +42,7 @@ def create_run(req: CreateProspectiveRunRequest) -> dict[str, Any]:
     source_config.setdefault("evidence_cutoff_policy", "before_capture_date")
     for key, default, upper in (
         ("candidate_lookback_trade_days", 3, 60), ("analysis_lookback_trade_days", 20, 250),
-        ("candidate_limit", 100, 500), ("selection_count", 5, 100),
+        ("candidate_limit", 100, 500), ("selection_count", 5, 500),
     ):
         try:
             value = int(source_config.get(key) or default)
@@ -56,9 +56,23 @@ def create_run(req: CreateProspectiveRunRequest) -> dict[str, Any]:
             raise HTTPException(status_code=400, detail=f"{key} must be an array")
     if int(source_config["analysis_lookback_trade_days"]) < int(source_config["candidate_lookback_trade_days"]):
         raise HTTPException(status_code=400, detail="analysis_lookback_trade_days must be at least candidate_lookback_trade_days")
+    metric_config = dict(req.metric_config)
+    predictor_config = dict(req.predictor_config)
+    horizons = predictor_config.get("horizons", metric_config.get("horizons"))
+    if horizons is not None:
+        if isinstance(horizons, str):
+            horizons = [value for value in horizons.replace(",", " ").split() if value]
+        if not isinstance(horizons, list) or not horizons:
+            raise HTTPException(status_code=400, detail="horizons must be a non-empty array")
+        try:
+            normalized_horizons = sorted({int(value) for value in horizons})
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="horizons must contain integers") from exc
+        if any(value < 1 or value > 5 for value in normalized_horizons):
+            raise HTTPException(status_code=400, detail="prospective horizons must be between 1 and 5")
+        predictor_config["horizons"] = normalized_horizons
     if source_config["evidence_cutoff_policy"] not in {"before_capture_date", "timestamp_verified"}:
         raise HTTPException(status_code=400, detail="unsupported evidence_cutoff_policy")
-    metric_config = dict(req.metric_config)
     settlement_mode = str(metric_config.get("settlement_mode") or "after_trade_days")
     if settlement_mode not in {"after_trade_days", "absolute_trade_date"}:
         raise HTTPException(status_code=400, detail="unsupported settlement_mode")
@@ -82,7 +96,7 @@ def create_run(req: CreateProspectiveRunRequest) -> dict[str, Any]:
             raise HTTPException(status_code=400, detail="settlement_trade_date must be an exchange trading day")
     return db.create_prospective_run(
         name=req.name, capture_at=req.capture_at, settle_after_days=req.settle_after_days,
-        source_config=source_config, predictor_config=req.predictor_config, metric_config=metric_config,
+        source_config=source_config, predictor_config=predictor_config, metric_config=metric_config,
     )
 
 
