@@ -8,6 +8,7 @@ from pathlib import Path
 os.environ.setdefault("TQDM_DISABLE", "1")
 
 from dotenv import load_dotenv
+from .config_compat import apply_legacy_names, default_llm_settings
 
 # backend/app/config.py -> app -> backend -> Pronoia project root
 _BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -17,11 +18,10 @@ _PROJECT_ROOT = _BACKEND_DIR.parent
 # then backend-local .env may override.
 load_dotenv(_PROJECT_ROOT / ".env", override=False)
 load_dotenv(_BACKEND_DIR / ".env", override=True)
+apply_legacy_names(os.environ)
 
 # 默认 LLM 服务商（OpenAI 兼容接口，可换成任意 OpenAI 兼容端点）
-LLM_API_URL: str = os.getenv("LLM_API_URL", "")
-LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
-LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o-mini")
+LLM_API_URL, LLM_API_KEY, LLM_MODEL = default_llm_settings(os.environ)
 
 MAAS_API_URL: str = os.getenv("MAAS_API_URL", "")
 MAAS_API_KEY: str = os.getenv("MAAS_API_KEY", "")

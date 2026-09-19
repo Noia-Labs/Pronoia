@@ -196,6 +196,11 @@ def _make_us_ma_event() -> dict:
 class TestTeamFullE2E:
     """端到端：engine → run_team → _route_signals → analyzer → synthesize → parser。"""
 
+    @pytest.fixture(autouse=True)
+    def isolate_checkpoints(self, tmp_path):
+        self.ckpt_dir = tmp_path / "checkpoints"
+        self.ckpt_dir.mkdir()
+
     async def _run_with_mock_llm(self, event: dict, expected_direction: str) -> dict:
         """通用 e2e runner。返回 trajectory ckpt 内容（用于断言）。"""
         from app.event_backtest import engine as eng_mod
@@ -256,8 +261,7 @@ class TestTeamFullE2E:
         import app.llm as llm_mod
         import app.agents.team as team_mod
 
-        ckpt_dir = Path(__file__).parent / "_e2e_ckpt"
-        ckpt_dir.mkdir(exist_ok=True)
+        ckpt_dir = self.ckpt_dir
 
         # 调试钩子：拦截 _route_signals 看实际输入输出
         routing_trace: list[dict] = []
@@ -400,7 +404,7 @@ class TestTeamFullE2E:
 
         import app.llm as llm_mod
         import app.agents.team as team_mod
-        ckpt_dir = Path(__file__).parent / "_e2e_ckpt"
+        ckpt_dir = self.ckpt_dir
 
         with patch.object(llm_mod, "get_client", return_value=_FakeClient([])), \
              patch.object(llm_mod, "complete_json", _fake_complete_json), \

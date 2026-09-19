@@ -45,6 +45,33 @@ def completion(content=None, finish_reason="length", **message_fields):
     }
 
 
+@pytest.mark.parametrize("mode,expected", [("auto", "disabled"), ("disabled", "disabled"), ("enabled", "enabled")])
+def test_official_deepseek_probe_and_calls_honor_mode(response_transport, mode, expected):
+    responses, requests = response_transport
+    responses.append(completion("OK", "stop"))
+    profile = {**PROFILE, "base_url": "https://api.deepseek.com", "thinking_mode": mode}
+    assert providers.validate_profile(profile)["answer_verified"] is True
+    assert requests[0]["thinking"] == {"type": expected}
+
+
+def test_direct_mode_only_changes_official_profile_proxy_handler(response_transport, monkeypatch):
+    responses, _ = response_transport
+    monkeypatch.setenv("DEEPSEEK_TRANSPORT", "direct")
+    calls = []
+    existing_opener = providers.build_opener
+
+    def build(*handlers):
+        calls.append(handlers)
+        return existing_opener(*handlers)
+
+    monkeypatch.setattr(providers, "build_opener", build)
+    for base_url in ("https://api.deepseek.com", "https://models.example.invalid/v1"):
+        responses.append(completion("OK", "stop"))
+        providers.validate_profile({**PROFILE, "base_url": base_url})
+    assert any(isinstance(h, providers.ProxyHandler) and h.proxies == {} for h in calls[0])
+    assert not any(isinstance(h, providers.ProxyHandler) for h in calls[1])
+
+
 @pytest.mark.parametrize("reasoning", [None, "private synthetic reasoning"])
 def test_reasoning_budget_exhaustion_confirms_connection_without_claiming_answer(response_transport, reasoning):
     responses, requests = response_transport

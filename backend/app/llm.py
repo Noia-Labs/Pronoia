@@ -20,6 +20,7 @@ from openai import AsyncOpenAI
 import httpx
 
 from . import config
+from .provider_compat import chat_request_options, direct_deepseek
 from .model_lab.defaults import DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_STRUCTURED_OUTPUT_TOKENS
 from .log_bus import publish
 from .skills.registry import REGISTRY, ensure_skills_loaded, serialize_tool_result, tool_schema_subset, tools_for_agent
@@ -85,6 +86,7 @@ class LLMRuntimeTarget:
     profile_id: Optional[str] = None
     secret_env_ref: Optional[str] = None
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    thinking_mode: str = "auto"
 
 
 _runtime_override: ContextVar[Optional[LLMRuntimeTarget]] = ContextVar(
@@ -116,6 +118,7 @@ def _target_from_profile(profile: dict[str, Any]) -> LLMRuntimeTarget:
         profile_id=str(profile.get("id") or "") or None,
         secret_env_ref=str(profile.get("secret_env_ref") or "") or None,
         max_output_tokens=int(profile.get("max_output_tokens") or DEFAULT_MAX_OUTPUT_TOKENS),
+        thinking_mode=str(profile.get("thinking_mode") or "auto"),
     )
 
 
@@ -148,6 +151,11 @@ def resolve_runtime_target() -> LLMRuntimeTarget:
 
 def get_model_name() -> str:
     return resolve_runtime_target().model_id
+
+
+def _request_options() -> dict[str, Any]:
+    target = resolve_runtime_target()
+    return chat_request_options(target.base_url, target.thinking_mode)
 
 
 def output_token_limit(requested: int | None = None) -> int:
@@ -195,10 +203,10 @@ def get_client() -> AsyncOpenAI:
     if target.profile_id is None:
         if _client is None:
             http_client = None
-            if config.LLM_FORCE_IPV4:
+            if config.LLM_FORCE_IPV4 or direct_deepseek(target.base_url):
                 http_client = httpx.AsyncClient(
                     transport=httpx.AsyncHTTPTransport(
-                        local_address="0.0.0.0", retries=2
+                        local_address="0.0.0.0" if config.LLM_FORCE_IPV4 else None, retries=2
                     ),
                     timeout=target.timeout_seconds,
                 )
@@ -227,10 +235,10 @@ def get_client() -> AsyncOpenAI:
     client = _profile_clients.get(cache_key)
     if client is None:
         http_client = None
-        if config.LLM_FORCE_IPV4:
+        if config.LLM_FORCE_IPV4 or direct_deepseek(target.base_url):
             http_client = httpx.AsyncClient(
                 transport=httpx.AsyncHTTPTransport(
-                    local_address="0.0.0.0", retries=2
+                    local_address="0.0.0.0" if config.LLM_FORCE_IPV4 else None, retries=2
                 ),
                 timeout=target.timeout_seconds,
             )
@@ -412,6 +420,7 @@ async def run_agent(
     for round_no in range(1, max_rounds + 1):
         state["rounds"] = round_no
         kwargs: dict[str, Any] = {
+            **_request_options(),
             "model": get_model_name(),
             "messages": messages,
             "stream": True,
@@ -429,6 +438,7 @@ async def run_agent(
         for transport_attempt in range(2):
             tc_acc = {}
             round_content = ""
+            round_reasoning = ""
             saw_content = False
             finish_reason = None
             try:
@@ -439,6 +449,8 @@ async def run_agent(
                     choice = chunk.choices[0]
                     delta = choice.delta
                     rc = getattr(delta, "reasoning_content", None)
+                    if rc:
+                        round_reasoning += rc
                     if rc and emit_thinking:
                         yield {"type": "thinking", "agent": agent_id, "delta": rc}
                     if delta.content:
@@ -497,6 +509,10 @@ async def run_agent(
                 for i, t in enumerate(tool_calls)
             ],
         })
+        if round_reasoning and "extra_body" in kwargs:
+            # Official DeepSeek thinking tool calls require the earlier
+            # reasoning on the next request, even when the UI hides thinking.
+            messages[-1]["reasoning_content"] = round_reasoning
         for i, t in enumerate(tool_calls):
             tc_id = t["id"] or f"call_{round_no}_{i}"
             name = t["name"]
@@ -557,6 +573,7 @@ async def run_agent(
         repeated_failure_skill = next((skill for skill, count in consecutive_failures.items() if count >= 3), None)
         if repeated_failure_skill:
             summary_kwargs: dict[str, Any] = {
+                **_request_options(),
                 "model": get_model_name(),
                 "messages": messages + [{
                     "role": "user",
@@ -589,6 +606,7 @@ async def run_agent(
         # 达到最大轮数仍有 tool_calls —— 让模型做一次无工具总结
         state["truncated_by_rounds"] = True
         summary_kwargs: dict[str, Any] = {
+            **_request_options(),
             "model": get_model_name(),
             "messages": messages + [{"role": "user", "content": "工具轮次已用完，请基于已获得的信息直接给出最终回答。"}],
             "stream": True,
@@ -867,6 +885,7 @@ async def complete_text(system: str, user: str, *, max_tokens: int = DEFAULT_MAX
     """Non-streaming single completion (returns content only)."""
     client = get_client()
     resp = await _create_with_hard_timeout(client.chat.completions.create(
+        **_request_options(),
         model=get_model_name(),
         messages=[{"role": "system", "content": system},
                   {"role": "user", "content": user}],
@@ -926,6 +945,7 @@ async def complete_json_diagnostic(
         _t0 = time.time()
         try:
             request_kwargs: dict[str, Any] = {
+                **_request_options(),
                 "model": get_model_name(),
                 "messages": _json_completion_messages(system, user),
                 "max_tokens": request_max_tokens,

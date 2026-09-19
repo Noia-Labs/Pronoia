@@ -1835,3 +1835,30 @@ export interface LogEntry {
   ts: string;
   msg: string;
 }
+
+
+export interface FollowupEntry {
+  observation_id: string;
+  state: "pending" | "observed" | "ruled_out" | "unavailable";
+  reviewer: string;
+  note: string;
+  minutes_spent: number;
+  useful: boolean | null;
+  evidence_url: string;
+  evidence_published_at: string;
+  recorded_at: string;
+  sequence: number;
+}
+export interface SimulationFollowup {
+  item_reviews?: Record<string, Array<{code: string; message: string}>>;
+  snapshot: null | {
+    snapshot_sha256: string;
+    mode: "prospective" | "retrospective";
+    as_of: string;
+    frozen_at: string;
+    window_end: string;
+    items: Array<{id: string; kind: string; signal: string; source: string; occurrences: Array<{branch_id: string}>}>;
+  };
+  journal: FollowupEntry[];
+  checkpoints: Array<{day: number; status: string; resolution_rate: number | null; human_useful_count?: number; review_minutes?: number}>;
+}

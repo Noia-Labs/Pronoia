@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import threading
 import time
+import json
+from pathlib import Path
 from typing import Any, Literal
 
 import requests
@@ -18,6 +20,33 @@ _watch_lock = threading.RLock()
 _watched_jobs: set[str] = set()
 
 
+def _samples() -> list[dict[str, Any]]:
+    return json.loads((Path(__file__).resolve().parents[1] / "simulation_samples.json").read_text())
+
+
+@router.get("/simulation-samples")
+def list_simulation_samples():
+    return [{k: sample[k] for k in ("id", "title", "check", "kind", "as_of", "horizon_days")} for sample in _samples()]
+
+
+@router.post("/simulation-samples/{sample_id}/open", status_code=201)
+def open_simulation_sample(sample_id: str):
+    sample = next((s for s in _samples() if s["id"] == sample_id), None)
+    if sample is None:
+        raise HTTPException(status_code=404, detail="未找到该试用样例")
+    case = db.create_case("试用 · " + sample["title"])
+    try:
+        graph = db.add_artifact(case["id"], None, "graph", "历史公开资料节选 · " + sample["as_of"][:10], {
+            **sample["evidence_graph"],
+            "simulation_context": {k: sample[k] for k in ("id", "kind", "as_of", "horizon_days", "market", "check")},
+        })
+    except Exception:
+        db.delete_case(case["id"])
+        raise
+    # Loading evidence is local and never starts a model-backed run.
+    return {"case": case, "graph_artifact_id": graph["id"]}
+
+
 class StartSimulationRequest(BaseModel):
     source_graph_artifact_id: str = Field(..., min_length=1)
     question: str | None = None
@@ -25,7 +54,9 @@ class StartSimulationRequest(BaseModel):
     horizon_days: int = Field(default=30, ge=1, le=365)
     mode: Literal["quick"] = "quick"
     max_actors: int | None = Field(default=None, ge=4, le=10)
+    rerun: bool = False
     market: dict[str, Any] | None = None
+    product_version: Literal["v7", "v12"] | None = None
 
 
 def _gateway(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
@@ -64,7 +95,9 @@ def _build_gateway_payload(
     payload["evidence_graph"] = graph["payload"]
     # Stable default is essential for idempotency: the same immutable graph
     # and parameters must compile to the same spec hash on repeated clicks.
-    payload["as_of"] = request.as_of or graph["created_at"]
+    context = graph["payload"].get("simulation_context") or {}
+    payload["as_of"] = request.as_of or context.get("as_of") or graph["created_at"]
+    payload["market"] = request.market or context.get("market")
     return payload, graph
 
 
@@ -205,3 +238,25 @@ def list_simulations(case_id: str):
     if not db.get_case(case_id):
         raise HTTPException(status_code=404, detail="case not found")
     return [_public(job) for job in db.list_simulation_jobs(case_id)]
+
+
+def _followup_proxy(job_id: str, method: str, suffix: str = "", **kwargs):
+    job = db.get_simulation_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="simulation job not found")
+    return _gateway(method, f"/v1/simulations/{job['gateway_job_id']}/followup{suffix}", **kwargs)
+
+
+@router.get("/simulations/{job_id}/followup")
+def get_followup(job_id: str):
+    return _followup_proxy(job_id, "GET")
+
+
+@router.post("/simulations/{job_id}/followup")
+def register_followup(job_id: str):
+    return _followup_proxy(job_id, "POST")
+
+
+@router.post("/simulations/{job_id}/followup/entries")
+def add_followup(job_id: str, entry: dict[str, Any]):
+    return _followup_proxy(job_id, "POST", "/entries", json=entry)

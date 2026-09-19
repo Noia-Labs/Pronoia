@@ -39,7 +39,7 @@ interface UIPrefs {
 
 function loadUIPrefs(): UIPrefs {
   try {
-    const raw = localStorage.getItem(UI_KEY);
+    const raw = localStorage.getItem(UI_KEY) ?? localStorage.getItem("fever.ui.v1");
     if (!raw) return {};
     return JSON.parse(raw) as UIPrefs;
   } catch {
@@ -57,7 +57,7 @@ function saveUIPrefs(p: UIPrefs) {
 
 function loadLogicLibrary(): LogicItem[] {
   try {
-    const raw = localStorage.getItem(LOGIC_KEY);
+    const raw = localStorage.getItem(LOGIC_KEY) ?? localStorage.getItem("fever.logic_library.v1");
     if (!raw) return [];
     const j = JSON.parse(raw) as LogicItem[];
     return Array.isArray(j) ? j : [];
@@ -248,6 +248,7 @@ export function partsFromHistory(m: HistoryMessage): Part[] {
  * setView 会将它统一导航到回测首页“运行记录”。
  */
 export type ViewName =
+  | "simulation-workspace"
   | "chat"
   | "backtest-event"
   | "backtest-quant"
@@ -314,6 +315,7 @@ function routeFromLocation(): RouteSnapshot {
     "/backtest": "backtest-runs",
     "/arena": "arena-list",
     "/prospective": "prospective-list",
+    "/simulations": "simulation-workspace",
   };
   return {
     view: views[path] ?? "chat",
@@ -330,6 +332,7 @@ function pathForView(
   const normalized = view === "backtest-list" ? "backtest-runs" : view;
   const paths: Partial<Record<ViewName, string>> = {
     chat: "/",
+    "simulation-workspace": "/simulations",
     "backtest-event": "/backtest/event",
     "backtest-quant": "/backtest/quant",
     "backtest-runs": "/backtest/runs",

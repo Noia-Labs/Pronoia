@@ -65,7 +65,7 @@ AGENTS: dict[str, dict] = {
         "description": "从新闻/公告中筛选高影响事件，输出结构化事件清单（事件、日期、标的、影响假设、来源链接）。",
         "skills": [
             "stock_overview", "news_intel", "macro_intel", "event_study_skill",
-            "announcement_classifier",
+            "announcement_classifier", "frozen_announcement_fetch",
         ],
         "persona": """你是「事件猎手 Event Scout」。围绕任务检索个股新闻、公告与全局快讯，
 筛选真正高影响的事件（业绩、增减持、监管、合同、政策），输出结构化事件清单：

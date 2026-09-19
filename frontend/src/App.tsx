@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import SimulationWorkspace from "./pages/SimulationWorkspace";
 import Sidebar from "./components/Sidebar";
 import ChatPanel from "./components/ChatPanel";
 import RightPanel from "./components/RightPanel";
@@ -45,6 +46,7 @@ export default function App() {
             <RightPanel />
           </>
         )}
+        {view === "simulation-workspace" && <SimulationWorkspace />}
         {view === "backtest-event" && <BacktestEventPage />}
         {view === "backtest-quant" && <BacktestQuantPage />}
         {(view === "backtest-runs" || view === "backtest-list") && <BacktestRunsPage />}

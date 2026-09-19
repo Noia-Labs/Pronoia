@@ -50,7 +50,7 @@ class TestEventStudyPriceRouting(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual(len(calls), 2)
         self.assertEqual({call[0][0] for call in calls}, {"sz000425", "sh000300"})
-        self.assertEqual({call[1]["end_date"] for call in calls}, {"20260901"})
+        self.assertEqual({call[1]["end_date"] for call in calls}, {"20260831"})
         self.assertEqual(result["meta"]["asset_provider"], "bounded.test")
         self.assertEqual(result["meta"]["benchmark_provider"], "bounded.test")
         self.assertIsNotNone(result["data"]["summary"]["pre5_cum_ar_pct"])

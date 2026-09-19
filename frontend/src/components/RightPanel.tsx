@@ -166,7 +166,7 @@ function ArtifactDetail({ artifact }: { artifact: Artifact }) {
         {artifact.kind === "evidence" && <EvidenceView payload={artifact.payload} />}
         {artifact.kind === "report" && <ReportView payload={artifact.payload} />}
         {artifact.kind === "graph" && <><SimulationLaunch artifact={artifact} /><GraphView payload={artifact.payload} /></>}
-        {artifact.kind === "simulation" && <SimulationView payload={artifact.payload} />}
+        {artifact.kind === "simulation" && <><a href={`/simulations?case=${encodeURIComponent(artifact.case_id)}&artifact=${encodeURIComponent(artifact.id)}`} target="_blank" rel="noreferrer" className="mb-3 block rounded-lg border border-jade/30 bg-jade-soft px-3 py-2 text-center text-xs font-semibold text-jade">在独立推演窗口查看与复核 ↗</a><SimulationView payload={artifact.payload} /></>}
       </div>
     </div>
   );
