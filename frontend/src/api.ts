@@ -47,6 +47,8 @@ import type {
   SuggestionItem,
   SSEEvent,
   SimulationJob,
+  SimulationFollowup,
+  FollowupEntry,
   ProspectiveDetailResponse,
   ProspectiveRun,
 } from "./types";
@@ -121,6 +123,11 @@ export const api = {
     }),
   genReport: (caseId: string) =>
     req<Artifact>(`/cases/${caseId}/report`, { method: "POST", body: "{}" }),
+  simulationFollowup: (id: string) => req<SimulationFollowup>(`/simulations/${id}/followup`),
+  simulationSamples: () => req<Array<{id: string; title: string; check: string; kind: string; as_of: string; horizon_days: number}>>("/simulation-samples"),
+  openSimulationSample: (id: string) => req<{case: CaseItem; graph_artifact_id: string}>(`/simulation-samples/${id}/open`, {method: "POST", body: "{}"}),
+  registerSimulationFollowup: (id: string) => req<SimulationFollowup>(`/simulations/${id}/followup`, {method: "POST", body: "{}"}),
+  reviewSimulation: (id: string, body: Omit<FollowupEntry, "recorded_at" | "sequence"> & {expected_revision: number}) => req<SimulationFollowup>(`/simulations/${id}/followup/entries`, {method: "POST", body: JSON.stringify(body)}),
   startSimulation: (
     caseId: string,
     body: {
@@ -129,6 +136,8 @@ export const api = {
       horizon_days?: number;
       mode?: "quick" | "calibrated";
       max_actors?: number;
+      product_version?: "v7" | "v12";
+      rerun?: boolean;
     },
   ) => req<SimulationJob>(`/cases/${caseId}/simulations`, {
     method: "POST",
@@ -142,6 +151,7 @@ export const api = {
       horizon_days?: number;
       mode?: "quick";
       max_actors?: number;
+      product_version?: "v7" | "v12";
     },
   ) => req<{
     actor_selection: {
@@ -151,7 +161,11 @@ export const api = {
       configured_count: number;
       rationale: string;
     };
-    actors: Array<{ id: string; label: string; kind: string; selection_reason: string }>;
+    actors: Array<{ id: string; label: string; kind: string; selection_reason: string; focus?: string }>;
+    evidence_count?: number;
+    notices?: string[];
+    as_of?: string;
+    research_focus?: {id: string; title: string; evidence_refs: string[]} | null;
   }>(`/cases/${caseId}/simulations/preview`, {
     method: "POST",
     body: JSON.stringify(body),

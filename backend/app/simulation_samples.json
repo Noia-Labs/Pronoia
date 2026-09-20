@@ -1,0 +1,596 @@
+[
+  {
+    "id": "historical-01",
+    "title": "比亚迪：经营主线与历史分红",
+    "check": "检查主线是否围绕经营，避免重演旧分红或等待已披露的半年数据。",
+    "kind": "historical_excerpt",
+    "as_of": "2025-08-30T23:59:59+08:00",
+    "horizon_days": 30,
+    "question": "只根据截至2025-08-30的所附公开资料，研究比亚迪（002594）已披露事件和经营状况在未来30天可能怎样演变。找出重要参与方、相互影响、可核查触发与失效条件。事实与假设分开，不输出股价、概率或收益预测。",
+    "evidence_graph": {
+      "question": "只根据截至2025-08-30的所附公开资料，研究比亚迪（002594）已披露事件和经营状况在未来30天可能怎样演变。找出重要参与方、相互影响、可核查触发与失效条件。事实与假设分开，不输出股价、概率或收益预测。",
+      "nodes": [
+        {
+          "id": "F1",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2025-08-30/1224626650.PDF",
+          "source_data": {
+            "content": "2025年上半年，公司营业收入为371,280,948,000.00元，同比增长23.30%。",
+            "published_at": "2025-08-30"
+          }
+        },
+        {
+          "id": "F2",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2025-08-30/1224626650.PDF",
+          "source_data": {
+            "content": "2025年上半年，公司归属于上市公司股东的净利润为15,510,533,000.00元，同比增长13.79%。",
+            "published_at": "2025-08-30"
+          }
+        },
+        {
+          "id": "F3",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2025-08-02/1224368797.PDF",
+          "source_data": {
+            "content": "2025年7月，公司新能源汽车销量为344,296辆，本年累计销量为2,490,250辆，累计同比增长27.35%。",
+            "published_at": "2025-08-02"
+          }
+        },
+        {
+          "id": "F4",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2025-08-30/1224626650.PDF",
+          "source_data": {
+            "content": "2025年3月11日，公司完成配售129,800,000股新H股，配售价为335.2港元，所得款项净额约为43,383百万港元。",
+            "published_at": "2025-08-30"
+          }
+        },
+        {
+          "id": "F5",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2025-08-30/1224626650.PDF",
+          "source_data": {
+            "content": "公司2024年度利润分配及资本公积金转增股本方案已获2024年度股东会审议通过，方案为每10股派发现金红利39.74元（含税），每10股送红股8股，以资本公积金每10股转增12股。",
+            "published_at": "2025-08-30"
+          }
+        },
+        {
+          "id": "F6",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2025-08-30/1224626650.PDF",
+          "source_data": {
+            "content": "公司2025年员工持股计划已通过二级市场完成股票购买，累计买入公司A股股票10,714,990股，成交均价约为人民币372.18元/股。",
+            "published_at": "2025-08-30"
+          }
+        }
+      ],
+      "edges": []
+    },
+    "market": {
+      "region": "CN",
+      "venues": [
+        "XSHE"
+      ],
+      "instruments": [
+        {
+          "symbol": "002594",
+          "name": "比亚迪",
+          "kind": "equity",
+          "currency": "CNY"
+        }
+      ]
+    }
+  },
+  {
+    "id": "historical-06",
+    "title": "顺丰控股：经营差异与旧回购状态",
+    "check": "检查收入与业务量的不同口径，六月末尚未回购不能延续成八月末仍未回购。",
+    "kind": "historical_excerpt",
+    "as_of": "2025-08-30T23:59:59+08:00",
+    "horizon_days": 30,
+    "question": "只根据截至2025-08-30的所附公开资料，研究顺丰控股（002352）已披露事件和经营状况在未来30天可能怎样演变。找出重要参与方、相互影响、可核查触发与失效条件。事实与假设分开，不输出股价、概率或收益预测。",
+    "evidence_graph": {
+      "question": "只根据截至2025-08-30的所附公开资料，研究顺丰控股（002352）已披露事件和经营状况在未来30天可能怎样演变。找出重要参与方、相互影响、可核查触发与失效条件。事实与假设分开，不输出股价、概率或收益预测。",
+      "nodes": [
+        {
+          "id": "F1",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2025-08-29/1224611341.PDF",
+          "source_data": {
+            "content": "2025年上半年，公司营业收入为146,858,174千元，归属于上市公司股东的净利润为5,737,699千元。",
+            "published_at": "2025-08-29"
+          }
+        },
+        {
+          "id": "F2",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2025-08-29/1224611341.PDF",
+          "source_data": {
+            "content": "公司董事会审议通过2025年中期利润分配方案：以未来实施股权登记日的总股本减去回购专户股数为基数，向全体股东每10股派发现金红利4.6元（含税）。",
+            "published_at": "2025-08-29"
+          }
+        },
+        {
+          "id": "F3",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2025-08-29/1224611341.PDF",
+          "source_data": {
+            "content": "2024年第2期A股回购股份方案已实施完毕，累计回购23,270,358股，回购总金额约8.59亿元，该部分股份已于2025年8月7日完成注销。",
+            "published_at": "2025-08-29"
+          }
+        },
+        {
+          "id": "F4",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2025-08-29/1224611341.PDF",
+          "source_data": {
+            "content": "公司于2025年4月28日启动2025年第1期A股回购方案，拟回购金额不低于5亿元且不超过10亿元，截至2025年6月30日暂未回购。",
+            "published_at": "2025-08-29"
+          }
+        },
+        {
+          "id": "F5",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2025-08-29/1224611341.PDF",
+          "source_data": {
+            "content": "南方顺丰物流REIT于2025年4月21日在深圳证券交易所上市，最终募集规模为32.90亿元。",
+            "published_at": "2025-08-29"
+          }
+        },
+        {
+          "id": "F6",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2025-08-20/1224518046.PDF",
+          "source_data": {
+            "content": "2025年7月，公司速运物流业务收入186.57亿元，同比增长14.97%；业务量13.77亿票，同比增长33.69%。",
+            "published_at": "2025-08-20"
+          }
+        }
+      ],
+      "edges": []
+    },
+    "market": {
+      "region": "CN",
+      "venues": [
+        "XSHE"
+      ],
+      "instruments": [
+        {
+          "symbol": "002352",
+          "name": "顺丰控股",
+          "kind": "equity",
+          "currency": "CNY"
+        }
+      ]
+    }
+  },
+  {
+    "id": "historical-09",
+    "title": "国泰君安：合并方案与实施条件",
+    "check": "检查签署方案、内部决策、监管决定和实际实施是否分开。",
+    "kind": "historical_excerpt",
+    "as_of": "2024-09-21T23:59:59+08:00",
+    "horizon_days": 30,
+    "question": "只根据截至2024-09-21的所附公开资料，研究国泰君安（601211）已披露事件和经营状况在未来30天可能怎样演变。找出重要参与方、相互影响、可核查触发与失效条件。事实与假设分开，不输出股价、概率或收益预测。",
+    "evidence_graph": {
+      "question": "只根据截至2024-09-21的所附公开资料，研究国泰君安（601211）已披露事件和经营状况在未来30天可能怎样演变。找出重要参与方、相互影响、可核查触发与失效条件。事实与假设分开，不输出股价、概率或收益预测。",
+      "nodes": [
+        {
+          "id": "F1",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2024-09-13/1221216616.PDF",
+          "source_data": {
+            "content": "国泰君安与海通证券正在筹划由国泰君安通过向海通证券全体A股换股股东发行A股股票、向海通证券全体H股换股股东发行H股股票的方式换股吸收合并海通证券并发行A股股票募集配套资金。",
+            "published_at": "2024-09-13"
+          }
+        },
+        {
+          "id": "F2",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2024-09-13/1221216616.PDF",
+          "source_data": {
+            "content": "国泰君安A股股票自2024年9月6日开市起停牌，预计停牌时间不超过25个交易日。",
+            "published_at": "2024-09-13"
+          }
+        },
+        {
+          "id": "F3",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2024-09-06/1221149207.PDF",
+          "source_data": {
+            "content": "2024年9月5日，国泰君安与海通证券签署《合作协议》，就本次重组作出若干原则性约定。",
+            "published_at": "2024-09-06"
+          }
+        },
+        {
+          "id": "F4",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2024-09-13/1221216616.PDF",
+          "source_data": {
+            "content": "本次重组的具体合作方案以双方进一步签署的交易文件为准，尚需履行必要的内部决策程序，并需经有权监管机构批准后方可正式实施，能否实施尚存在不确定性。",
+            "published_at": "2024-09-13"
+          }
+        },
+        {
+          "id": "F5",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2024-09-13/1221216616.PDF",
+          "source_data": {
+            "content": "截至2024年9月13日，国泰君安股票将继续停牌，公司将在停牌期间积极推进各项工作。",
+            "published_at": "2024-09-13"
+          }
+        }
+      ],
+      "edges": []
+    },
+    "market": {
+      "region": "CN",
+      "venues": [
+        "XSHG"
+      ],
+      "instruments": [
+        {
+          "symbol": "601211",
+          "name": "国泰君安",
+          "kind": "equity",
+          "currency": "CNY"
+        }
+      ]
+    }
+  },
+  {
+    "id": "historical-14",
+    "title": "美的集团：发行与上市实施",
+    "check": "检查已完成备案和聆讯是否被误写成未来尚待完成。",
+    "kind": "historical_excerpt",
+    "as_of": "2024-09-10T23:59:59+08:00",
+    "horizon_days": 30,
+    "question": "只根据截至2024-09-10的所附公开资料，研究美的集团（000333）已披露事件和经营状况在未来30天可能怎样演变。找出重要参与方、相互影响、可核查触发与失效条件。事实与假设分开，不输出股价、概率或收益预测。",
+    "evidence_graph": {
+      "question": "只根据截至2024-09-10的所附公开资料，研究美的集团（000333）已披露事件和经营状况在未来30天可能怎样演变。找出重要参与方、相互影响、可核查触发与失效条件。事实与假设分开，不输出股价、概率或收益预测。",
+      "nodes": [
+        {
+          "id": "F1",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2024-09-09/1221171622.PDF",
+          "source_data": {
+            "content": "美的集团正在进行发行H股股票并在香港联交所主板挂牌上市的相关工作。",
+            "published_at": "2024-09-09"
+          }
+        },
+        {
+          "id": "F2",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2024-09-09/1221171622.PDF",
+          "source_data": {
+            "content": "2023年10月24日，公司向香港联交所递交了本次发行上市的申请。",
+            "published_at": "2024-09-09"
+          }
+        },
+        {
+          "id": "F3",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2024-09-09/1221171622.PDF",
+          "source_data": {
+            "content": "2024年7月23日，公司收到中国证监会出具的《关于美的集团股份有限公司境外发行上市备案通知书》，中国证监会对公司本次发行上市备案信息予以确认。",
+            "published_at": "2024-09-09"
+          }
+        },
+        {
+          "id": "F4",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2024-08-31/1221083991.PDF",
+          "source_data": {
+            "content": "2024年8月8日，香港联交所上市委员会举行上市聆讯，审议了公司本次发行上市的申请。",
+            "published_at": "2024-08-31"
+          }
+        },
+        {
+          "id": "F5",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2024-09-09/1221171622.PDF",
+          "source_data": {
+            "content": "公司本次全球发售H股基础发行股数为492,135,100股，其中初步安排香港公开发售24,606,800股，国际发售467,528,300股。",
+            "published_at": "2024-09-09"
+          }
+        },
+        {
+          "id": "F6",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2024-09-09/1221171622.PDF",
+          "source_data": {
+            "content": "公司本次H股发行的价格区间初步确定为52.00港元至54.80港元。",
+            "published_at": "2024-09-09"
+          }
+        }
+      ],
+      "edges": []
+    },
+    "market": {
+      "region": "CN",
+      "venues": [
+        "XSHE"
+      ],
+      "instruments": [
+        {
+          "symbol": "000333",
+          "name": "美的集团",
+          "kind": "equity",
+          "currency": "CNY"
+        }
+      ]
+    }
+  },
+  {
+    "id": "historical-19",
+    "title": "歌尔股份：单项产品停产",
+    "check": "检查是否把某款产品的影响扩大为客户全部项目，或重演已归还的募集资金。",
+    "kind": "historical_excerpt",
+    "as_of": "2022-11-09T23:59:59+08:00",
+    "horizon_days": 30,
+    "question": "只根据截至2022-11-09的所附公开资料，研究歌尔股份（002241）已披露事件和经营状况在未来30天可能怎样演变。找出重要参与方、相互影响、可核查触发与失效条件。事实与假设分开，不输出股价、概率或收益预测。",
+    "evidence_graph": {
+      "question": "只根据截至2022-11-09的所附公开资料，研究歌尔股份（002241）已披露事件和经营状况在未来30天可能怎样演变。找出重要参与方、相互影响、可核查触发与失效条件。事实与假设分开，不输出股价、概率或收益预测。",
+      "nodes": [
+        {
+          "id": "F1",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2022-11-05/1215034093.PDF",
+          "source_data": {
+            "content": "歌尔股份于2021年11月8日召开董事会和监事会，审议通过使用120,000万元闲置募集资金暂时补充流动资金，使用期限不超过12个月。",
+            "published_at": "2022-11-05"
+          }
+        },
+        {
+          "id": "F2",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2022-11-05/1215034093.PDF",
+          "source_data": {
+            "content": "截至2022年11月4日，歌尔股份已将用于暂时补充流动资金的120,000万元闲置募集资金全部归还至募集资金专用账户，使用期限未超过12个月。",
+            "published_at": "2022-11-05"
+          }
+        },
+        {
+          "id": "F3",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2022-11-05/1215034093.PDF",
+          "source_data": {
+            "content": "歌尔股份于2022年2月24日、2022年5月16日及2022年8月29日分别将30,000万元、10,000万元和10,000万元提前归还至募集资金专户。",
+            "published_at": "2022-11-05"
+          }
+        },
+        {
+          "id": "F4",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2022-11-09/1215053143.PDF",
+          "source_data": {
+            "content": "歌尔股份收到境外某大客户的通知，暂停生产其一款智能声学整机产品。",
+            "published_at": "2022-11-09"
+          }
+        },
+        {
+          "id": "F5",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2022-11-09/1215053143.PDF",
+          "source_data": {
+            "content": "本次业务变动预计影响歌尔股份2022年度营业收入不超过33亿元，约占公司2021年度经审计营业收入的4.2%。",
+            "published_at": "2022-11-09"
+          }
+        },
+        {
+          "id": "F6",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2022-11-09/1215053143.PDF",
+          "source_data": {
+            "content": "歌尔股份与该境外大客户的其他产品项目合作仍在正常开展。",
+            "published_at": "2022-11-09"
+          }
+        }
+      ],
+      "edges": []
+    },
+    "market": {
+      "region": "CN",
+      "venues": [
+        "XSHE"
+      ],
+      "instruments": [
+        {
+          "symbol": "002241",
+          "name": "歌尔股份",
+          "kind": "equity",
+          "currency": "CNY"
+        }
+      ]
+    }
+  },
+  {
+    "id": "historical-24",
+    "title": "康美药业：风险警示与司法执行",
+    "check": "检查交易所决定、公司申请与司法执行是否各有权限和证据。",
+    "kind": "historical_excerpt",
+    "as_of": "2024-07-02T23:59:59+08:00",
+    "horizon_days": 30,
+    "question": "只根据截至2024-07-02的所附公开资料，研究康美药业（600518）已披露事件和经营状况在未来30天可能怎样演变。找出重要参与方、相互影响、可核查触发与失效条件。事实与假设分开，不输出股价、概率或收益预测。",
+    "evidence_graph": {
+      "question": "只根据截至2024-07-02的所附公开资料，研究康美药业（600518）已披露事件和经营状况在未来30天可能怎样演变。找出重要参与方、相互影响、可核查触发与失效条件。事实与假设分开，不输出股价、概率或收益预测。",
+      "nodes": [
+        {
+          "id": "F1",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2024-06-27/1220468173.PDF",
+          "source_data": {
+            "content": "康美药业于2024年6月27日召开董事会，审议通过向上海证券交易所申请撤销公司股票其他风险警示的议案。",
+            "published_at": "2024-06-27"
+          }
+        },
+        {
+          "id": "F2",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2024-06-27/1220468173.PDF",
+          "source_data": {
+            "content": "公司2022年度、2023年度内部控制审计报告均为标准无保留意见，内部控制缺陷整改完成。",
+            "published_at": "2024-06-27"
+          }
+        },
+        {
+          "id": "F3",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2024-06-27/1220468173.PDF",
+          "source_data": {
+            "content": "渤海信托案件已二审终审判决并进入执行程序，揭阳中院裁定拍卖或变卖康美中药城、新世界商贸、世纪国药中药被抵押的不动产。",
+            "published_at": "2024-06-27"
+          }
+        },
+        {
+          "id": "F4",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2024-06-27/1220468173.PDF",
+          "source_data": {
+            "content": "公司2022年度以被抵押不动产账面价值为限计提未决诉讼预计负债共计60,916.28万元。",
+            "published_at": "2024-06-27"
+          }
+        },
+        {
+          "id": "F5",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2024-06-27/1220468173.PDF",
+          "source_data": {
+            "content": "公司原控股股东康美实业投资控股有限公司已被法院裁定宣告破产，管理人审查确认两批共58家债权人，债权金额544.11亿元。",
+            "published_at": "2024-06-27"
+          }
+        },
+        {
+          "id": "F6",
+          "kind": "evidence",
+          "title": "",
+          "body": "",
+          "source_kind": "filing",
+          "source_ref": "https://static.cninfo.com.cn/finalpage/2024-06-27/1220468173.PDF",
+          "source_data": {
+            "content": "公司2023年度营业收入487,401.61万元，同比增长16.60%；归属于上市公司股东的净利润10,252.12万元，实现扭亏为盈。",
+            "published_at": "2024-06-27"
+          }
+        }
+      ],
+      "edges": []
+    },
+    "market": {
+      "region": "CN",
+      "venues": [
+        "XSHG"
+      ],
+      "instruments": [
+        {
+          "symbol": "600518",
+          "name": "康美药业",
+          "kind": "equity",
+          "currency": "CNY"
+        }
+      ]
+    }
+  }
+]

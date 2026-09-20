@@ -684,7 +684,8 @@ async def event_study_skill(event_date: str, symbol: str | None = None,
                             window_days: int = 30,
                             benchmark: str | None = None,
                             as_of: bool = False,
-                            market: str | None = None) -> dict:
+                            market: str | None = None,
+                            prediction_cutoff_at: str | None = None) -> dict:
     sym_raw = (symbol or "").strip()
     declared_market = str(market or "").strip().upper()
     if declared_market and declared_market not in {"CN", "US"}:
@@ -758,6 +759,8 @@ async def event_study_skill(event_date: str, symbol: str | None = None,
         "index_symbol": idx_sym,
         "as_of": bool(as_of),
     }
+    if prediction_cutoff_at:
+        call_args["prediction_cutoff_at"] = prediction_cutoff_at
     result = await execute_skill("event_study", call_args)
     if not result.get("ok"):
         return result

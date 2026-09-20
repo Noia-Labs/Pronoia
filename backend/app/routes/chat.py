@@ -243,7 +243,7 @@ async def _run_chat(req: ChatRequest, queue: "asyncio.Queue") -> None:
                             "type": "agent_step",
                             "phase": "simulation_started",
                             "agent": "predictor",
-                            "note": "证据图已通过校验，单次多智能体推演已在后台启动，通常需要 5～10 分钟；聊天结束后仍会继续运行。",
+                            "note": "证据图已通过校验，单次多智能体推演已在后台启动，聊天结束后仍会继续运行，可在推演窗口查看进度。",
                             "simulation_job_id": handoff_job["id"],
                         }
                         state["tool_trace"].append(handoff_event)

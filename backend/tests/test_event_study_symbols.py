@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from app.skills import analysis, market
+from app.skills import analysis, market, cache
+from app.skills.price_data import PriceFrame, resolve_security_ref
 from app.skills import skill as composite
 
 
@@ -42,11 +43,13 @@ class TestEventStudySymbols(unittest.IsolatedAsyncioTestCase):
             # Bypass the cache so each alias exercises the actual tool route.
             return analysis.event_study.__wrapped__(**args)
 
+        cache.clear_cache()
+        def fake_fetch(raw, **kwargs):
+            return PriceFrame(resolve_security_ref(raw), "offline-shared", prices, ("offline-shared",))
+
         with (
             patch.object(composite, "execute_skill", dispatch),
-            patch.object(analysis, "_fetch_stock_close", return_value=(prices, "offline-stock")) as stock,
-            patch.object(analysis, "_fetch_a_share_index_close", return_value=(prices, "offline-index")) as idx,
-            patch.object(analysis.ak, "stock_zh_index_daily", return_value=prices),
+            patch.object(analysis, "fetch_price_frame", side_effect=fake_fetch) as fetch,
             patch("requests.sessions.Session.request", side_effect=AssertionError("network forbidden")),
         ):
             result = await composite.event_study_skill(
@@ -55,9 +58,8 @@ class TestEventStudySymbols(unittest.IsolatedAsyncioTestCase):
                 window_days=3, market="CN", as_of=True,
             )
         self.assertTrue(result["ok"], result)
-        fetch = idx if index else stock
-        self.assertEqual(fetch.call_args.args[0], expected)
-        self.assertEqual((stock.call_count, idx.call_count), (0, 1) if index else (1, 0))
+        self.assertEqual(fetch.call_args_list[0].args[0], expected)
+        self.assertTrue(all(call.kwargs["end_date"] == "20240114" for call in fetch.call_args_list))
         # Fixing identifiers must not expose event-day or future prices.
         data = result["data"]
         self.assertTrue(data["postN_blocked"])

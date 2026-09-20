@@ -14,6 +14,7 @@ from app.main import app
 class SimulationRoutesTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
+        self.previous_db_path = config.DB_PATH
         if db._conn is not None:
             db._conn.close()
             db._conn = None
@@ -47,6 +48,80 @@ class SimulationRoutesTests(unittest.TestCase):
             db._conn.close()
             db._conn = None
         self.temporary.cleanup()
+        config.DB_PATH = self.previous_db_path
+
+    def test_simulation_and_prospective_state_survive_reinitialization_together(self):
+        job = db.create_simulation_job(
+            self.case["id"], self.graph["id"],
+            {"job_id": "migration-test", "status": "running"}, {"horizon_days": 7},
+        )
+        run = db.create_prospective_run(
+            name="coexistence", capture_at="2026-09-12T00:00:00+00:00", settle_after_days=3,
+        )
+        db.init_db()
+        self.assertEqual(db.get_simulation_job(job["id"])["status"], "running")
+        self.assertEqual(db.get_prospective_run(run["id"])["name"], "coexistence")
+        response = self.client.get("/api/prospective/runs")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["items"][0]["id"], run["id"])
+        db.delete_case(self.case["id"])
+        self.assertIsNone(db.get_simulation_job(job["id"]))
+        self.assertIsNotNone(db.get_prospective_run(run["id"]))
+
+    def test_rerun_and_observation_window_reach_gateway(self):
+        from app.routes.simulations import StartSimulationRequest, _build_gateway_payload
+        payload, _ = _build_gateway_payload(self.case["id"], StartSimulationRequest(
+            source_graph_artifact_id=self.graph["id"], horizon_days=7, max_actors=10, rerun=True,
+        ))
+        self.assertTrue(payload["rerun"])
+        self.assertEqual(payload["horizon_days"], 7)
+        self.assertEqual(payload["max_actors"], 10)
+
+    def test_long_window_and_compiler_choice_reach_gateway(self):
+        from app.routes.simulations import StartSimulationRequest, _build_gateway_payload
+        payload, _ = _build_gateway_payload(self.case["id"], StartSimulationRequest(
+            source_graph_artifact_id=self.graph["id"], horizon_days=180, product_version="v12",
+        ))
+        self.assertEqual(payload["horizon_days"], 180)
+        self.assertEqual(payload["product_version"], "v12")
+
+    def test_historical_sample_loading_is_local_and_preserves_cutoff_on_refresh(self):
+        from app.routes.simulations import StartSimulationRequest, _build_gateway_payload
+        with patch("app.routes.simulations._gateway") as remote:
+            listed = self.client.get("/api/simulation-samples")
+            self.assertEqual(len(listed.json()), 6)
+            response = self.client.post("/api/simulation-samples/historical-06/open", json={})
+            self.assertEqual(response.status_code, 201)
+            remote.assert_not_called()
+        sample = response.json()
+        self.assertTrue(sample["case"]["title"].startswith("试用 · "))
+        self.assertEqual(db.list_simulation_jobs(sample["case"]["id"]), [])
+        for _ in range(2):
+            payload, graph = _build_gateway_payload(sample["case"]["id"], StartSimulationRequest(
+                source_graph_artifact_id=sample["graph_artifact_id"], horizon_days=180, product_version="v12"))
+            self.assertEqual(payload["as_of"], "2025-08-30T23:59:59+08:00")
+            self.assertEqual(payload["horizon_days"], 180)
+            self.assertEqual(payload["market"]["instruments"][0]["symbol"], "002352")
+            self.assertNotEqual(payload["as_of"], graph["created_at"])
+
+    def test_invalid_sample_does_not_create_a_case(self):
+        before = len(db.list_cases())
+        self.assertEqual(self.client.post("/api/simulation-samples/not-a-sample/open", json={}).status_code, 404)
+        self.assertEqual(len(db.list_cases()), before)
+
+    def test_followup_routes_resolve_local_job_before_proxying(self):
+        job = db.create_simulation_job(self.case["id"], self.graph["id"],
+            {"job_id": "simjob_local_test", "status": "completed"}, {})
+        with patch("app.routes.simulations._gateway", return_value={"snapshot": None, "journal": []}) as proxy:
+            self.assertEqual(self.client.get("/api/simulations/missing/followup").status_code, 404)
+            proxy.assert_not_called()
+            self.assertEqual(self.client.get(f"/api/simulations/{job['id']}/followup").status_code, 200)
+            proxy.assert_called_with("GET", "/v1/simulations/simjob_local_test/followup")
+            self.assertEqual(self.client.post(f"/api/simulations/{job['id']}/followup", json={}).status_code, 200)
+            proxy.assert_called_with("POST", "/v1/simulations/simjob_local_test/followup")
+            body = {"expected_revision": 0, "observation_id": "W1", "state": "pending"}
+            self.assertEqual(self.client.post(f"/api/simulations/{job['id']}/followup/entries", json=body).status_code, 200)
+            proxy.assert_called_with("POST", "/v1/simulations/simjob_local_test/followup/entries", json=body)
 
     @staticmethod
     def completed_gateway(method, path, **kwargs):

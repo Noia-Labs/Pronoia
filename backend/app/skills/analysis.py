@@ -26,6 +26,7 @@ from .market import (
 )
 from .registry import err, meta, ok, skill
 from . import cache
+from .price_data import fetch_price_frame
 
 
 def _fetch_stock_close(sym: str, start8: str, end8: str) -> tuple[pd.DataFrame, str]:
@@ -80,6 +81,15 @@ def _fetch_us_index_close(sym: str) -> tuple[pd.DataFrame, str]:
     return _fetch_us_close(sym)
 
 
+@cache.cached("kline")
+def _visible_close(symbol: str, start: str, end: str) -> dict:
+    prices = fetch_price_frame(symbol, start_date=start, end_date=end)
+    frame = prices.frame
+    cutoff = f"{end[:4]}-{end[4:6]}-{end[6:]}"
+    frame = frame[frame["date"] <= cutoff][["date", "close"]]
+    return {"ok": True, "frame": frame, "provider": prices.provider}
+
+
 @skill(
     "event_study",
     "事件研究法：以事件日为 T0，计算窗口 [-pre,+post] 内个股相对指数的超额收益 AR 与累计超额收益 CAR，"
@@ -102,7 +112,8 @@ def _fetch_us_index_close(sym: str) -> tuple[pd.DataFrame, str]:
     internal=True,)
 @cache.cached("event_study")
 def event_study(symbol: str, event_date: str, pre: int = 20, post: int = 20,
-                index_symbol: str = "", as_of: bool = False) -> dict:
+                index_symbol: str = "", as_of: bool = False,
+                prediction_cutoff_at: str | None = None) -> dict:
     try:
         try:
             ev = datetime.strptime(norm_date(event_date), "%Y%m%d").date()
@@ -116,7 +127,19 @@ def event_study(symbol: str, event_date: str, pre: int = 20, post: int = 20,
         post = max(0, min(int(post or 0), 60))
 
         us = is_us_symbol(symbol)
-        if us:
+        if as_of:
+            sym = symbol.strip().upper() if us else (norm_index_symbol(symbol) if is_a_share_index_symbol(symbol) else norm_symbol(symbol))
+            idx_sym = (index_symbol or "SPY").upper() if us else norm_index_symbol(index_symbol or "sh000300")
+            cutoff = ev - timedelta(days=1)
+            if prediction_cutoff_at:
+                cutoff = min(cutoff, datetime.fromisoformat(prediction_cutoff_at.replace("Z", "+00:00")).date() - timedelta(days=1))
+            start8 = (ev - timedelta(days=pre * 2 + 60)).strftime("%Y%m%d")
+            end8 = min(date.today(), cutoff).strftime("%Y%m%d")
+            asset = _visible_close(sym, start8, end8)
+            benchmark = _visible_close(idx_sym, start8, end8)
+            stock_df, src_stock = asset["frame"], asset["provider"]
+            idx_df, src_idx = benchmark["frame"], benchmark["provider"]
+        elif us:
             sym = symbol.strip().upper()
             idx_sym = (index_symbol or "SPY").strip().upper()
             stock_df, src_stock = _fetch_us_close(sym)
@@ -157,10 +180,10 @@ def event_study(symbol: str, event_date: str, pre: int = 20, post: int = 20,
 
         ev_iso = ev.isoformat()
         ge = df.index[df["date"] >= ev_iso].tolist()
-        if not ge:
+        if not ge and not as_of:
             return err(f"事件日 {ev_iso} 之后无交易日数据")
-        t0 = ge[0]
-        actual_event_day = df.loc[t0, "date"]
+        t0 = ge[0] if ge else len(df)
+        actual_event_day = df.loc[t0, "date"] if ge else ev_iso
         i_start = t0 - pre
         if i_start < 1:  # 需要 i_start-1 计算首日收益
             return err(f"事件日前可用交易日不足 {pre} 天（仅 {t0} 天）")
@@ -201,7 +224,7 @@ def event_study(symbol: str, event_date: str, pre: int = 20, post: int = 20,
                 "ar": None if pd.isna(r["ar"]) else round(float(r["ar"]), 4),
                 "car": None if pd.isna(r["car"]) else round(float(r["car"]), 4),
             })
-        day0_rows = df.loc[t0]
+        day0_rows = df.loc[t0] if not as_of else None
         # The tool receives a date, not a reliable intraday timestamp. The only
         # universally safe cutoff is the previous trading close. This is
         # conservative for post-close announcements but never leaks T0 close
@@ -218,6 +241,8 @@ def event_study(symbol: str, event_date: str, pre: int = 20, post: int = 20,
                 "window": f"[-{pre}, -1] 交易日（strict as-of；截止前一交易日收盘 {prior_close_day}）",
                 "information_cutoff": "previous_trading_close",
                 "information_cutoff_date": prior_close_day,
+                "data_cutoff_date": prior_close_day,
+                "event_day_data_included": False,
                 "event_day_change_pct": None,
                 "event_day_idx_change_pct": None,
                 "event_day_ar_pct": None,
@@ -290,7 +315,7 @@ def event_study(symbol: str, event_date: str, pre: int = 20, post: int = 20,
         }
         return ok(
             {"summary": summary, "window": rows},
-            meta(f"{src_stock} + {src_idx}", len(rows)),
+            {**meta(f"{src_stock} + {src_idx}", len(rows)), "asset_provider": src_stock, "benchmark_provider": src_idx},
             artifacts=[line, table],
         )
     except Exception as e:  # noqa: BLE001

@@ -9,6 +9,7 @@ import ToolCallCard from "./ToolCallCard";
 import ArtifactCard from "./ArtifactCard";
 import LogicItemsPanel from "./LogicItemsPanel";
 import Markdown from "./Markdown";
+import { friendlySimulationError, researchProgressParts } from "../lib/researchProgress";
 
 /**
  * 合并连续 parts 后的渲染项：
@@ -99,17 +100,6 @@ const SIMULATION_STAGE_CN: Record<string, string> = {
   failed: "推演失败",
   cancelled: "已取消",
 };
-
-function friendlySimulationError(message?: string | null) {
-  if (!message) return "";
-  if (message.includes("Ontology generation failed")) {
-    return "MiroFish 在整理参与方关系时暂时失败。证据图和团队报告已保留，可在侧边栏重新启动单次推演。";
-  }
-  if (message.includes("safety budget is exhausted")) {
-    return "MiroFish 本次服务的模型安全预算已经用完。证据图已保留；重启 MiroFish 后可在侧边栏重新启动单次推演。";
-  }
-  return message;
-}
 
 function SimulationHandoffView({ part }: { part: Extract<Part, { type: "agent_step" }> }) {
   const caseId = useStore((s) => s.currentCaseId);
@@ -240,6 +230,19 @@ function AgentEnvelope({
 function AgentStepView({ part }: { part: Extract<Part, { type: "agent_step" }> }) {
   const agents = useStore((s) => s.agents);
 
+  if (part.phase === "hypotheses") {
+    const running = part.verdict === "running";
+    const complete = part.verdict === "completed" || part.verdict === "empty";
+    return (
+      <div className="flex items-start gap-2 rounded-lg border border-edge bg-[#FBFAF8] px-3 py-2 text-[12px] text-mute" role="status">
+        {running ? <RefreshCw size={13} className="mt-0.5 shrink-0 animate-spin" />
+          : complete ? <CheckCircle2 size={13} className="mt-0.5 shrink-0 text-jade" />
+            : <AlertCircle size={13} className="mt-0.5 shrink-0" />}
+        <span>{part.note}</span>
+      </div>
+    );
+  }
+
   if (part.phase === "plan" && part.plan?.length) {
     return (
       <div className="rounded-card border border-brand/25 bg-brand-soft/40 px-4 py-3 animate-fadeUp">
@@ -341,6 +344,8 @@ function AgentStepView({ part }: { part: Extract<Part, { type: "agent_step" }> }
 export default function MessageItem({ message }: { message: Message }) {
   const agents = useStore((s) => s.agents);
   const retryLastMessage = useStore((s) => s.retryLastMessage);
+  const parts = useMemo(() => researchProgressParts(message.parts ?? [], !!message.pending), [message.parts, message.pending]);
+  const renderItems = useMemo(() => mergeRenderItems(parts), [parts]);
 
   if (message.role === "user") {
     return (
@@ -358,7 +363,6 @@ export default function MessageItem({ message }: { message: Message }) {
   }
 
   // assistant：按 parts 时间序渲染
-  const parts = message.parts ?? [];
   const useParts = parts.length > 0;
   // team 判定：流式消息带 mode；历史消息从 parts 推断（含计划/非主理人 agent）
   const isTeam =
@@ -374,9 +378,6 @@ export default function MessageItem({ message }: { message: Message }) {
   parts.forEach((p, i) => {
     if (p.type === "text") lastTextIdx = i;
   });
-
-  // 合并连续 parts：thinking 连续合并、text 同 agent 合并、other 原样
-  const renderItems = useMemo(() => mergeRenderItems(parts), [parts]);
 
   return (
     <div className="animate-fadeUp">

@@ -86,6 +86,7 @@ scripts/pronoia bt run --events data/samples/events_cn_stock_10.jsonl \
 ## 文档
 
 - [回测平台架构](docs/backtesting-architecture.md)
+- [多智能体事件推演（实验性，需独立网关）](docs/mirofish-simulation.md)
 - [团队分享部署](docs/team-sharing.md)
 - [路线图](docs/roadmap.md)
 - [更新日志](CHANGELOG.md)

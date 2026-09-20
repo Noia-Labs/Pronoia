@@ -8,7 +8,8 @@ import time
 from typing import Any, Mapping, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, build_opener
+from urllib.request import ProxyHandler, Request, build_opener
+from ..provider_compat import chat_request_options, direct_deepseek
 
 from ..model_endpoint_security import (
     ValidatedModelRedirectHandler,
@@ -139,6 +140,7 @@ def call_chat(
     }
     provider = str(profile.get("provider") or "").lower()
     thinking = str(profile.get("thinking_mode") or "auto")
+    payload.update(chat_request_options(str(profile.get("base_url") or ""), thinking).get("extra_body", {}))
     if thinking == "disabled" and "kimi" in provider:
         payload["thinking"] = {"type": "disabled"}
     if thinking == "disabled" and any(name in provider for name in ("qwen", "dashscope")):
@@ -159,7 +161,10 @@ def call_chat(
     )
     started = time.monotonic()
     try:
-        with build_opener(_RedirectHandler()).open(request, timeout=timeout) as response:  # noqa: S310
+        handlers = [_RedirectHandler()]
+        if direct_deepseek(str(profile.get("base_url") or "")):
+            handlers.append(ProxyHandler({}))
+        with build_opener(*handlers).open(request, timeout=timeout) as response:  # noqa: S310
             raw = response.read(10_000_001)
     except HTTPError as exc:
         # Read a small response for diagnostics but never expose request data.

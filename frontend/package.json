@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "test:simulation": "node --test tests/simulationPresentation.test.mjs tests/researchProgress.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
