@@ -569,9 +569,7 @@ async function pollUntilComplete(
   signal?: AbortSignal,
 ) {
   const POLL_MS = 1500;
-  const MAX_MS = 6 * 60 * 1000; // 保护窗口 6 分钟（team 模式可能更久）
   const STABLE_ROUNDS = 3;
-  const start = Date.now();
   let lastKey = "";
   let stable = 0;
 
@@ -585,7 +583,6 @@ async function pollUntilComplete(
 
   for (;;) {
     if (signal?.aborted) return null;
-    if (Date.now() - start > MAX_MS) return null;
     try {
       const d = await api.caseDetail(caseId);
       const msgs = d.messages ?? [];
