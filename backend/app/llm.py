@@ -48,23 +48,34 @@ def _skill_timeout(name: str, category: str, depth: int) -> float:
 
 
 async def _create_with_hard_timeout(awaitable):
-    """Cap the SDK await even when a local proxy keeps the socket alive."""
-    return await asyncio.wait_for(
-        awaitable, timeout=resolve_runtime_target().timeout_seconds
-    )
+    """Cap the SDK await even when a local proxy keeps the socket alive.
+
+    timeout_seconds=0 means no timeout (disabled).
+    """
+    ts = resolve_runtime_target().timeout_seconds
+    if ts and ts > 0:
+        return await asyncio.wait_for(awaitable, timeout=ts)
+    return await awaitable
 
 
 async def _stream_with_hard_timeout(stream):
-    """Cap a complete streaming round instead of only individual socket reads."""
-    timeout_seconds = resolve_runtime_target().timeout_seconds
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_seconds
+    """Cap a complete streaming round instead of only individual socket reads.
+
+    timeout_seconds=0 means no timeout (disabled).
+    """
+    ts = resolve_runtime_target().timeout_seconds
     iterator = stream.__aiter__()
+    if not ts or ts <= 0:
+        async for chunk in iterator:
+            yield chunk
+        return
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + ts
     while True:
         remaining = deadline - loop.time()
         if remaining <= 0:
             raise asyncio.TimeoutError(
-                f"LLM streaming round exceeded {timeout_seconds:.0f}s"
+                f"LLM streaming round exceeded {ts:.0f}s"
             )
         try:
             chunk = await asyncio.wait_for(iterator.__anext__(), timeout=remaining)
@@ -310,13 +321,15 @@ async def execute_skill(name: str, args: dict) -> dict:
     depth_token = _skill_depth.set(depth + 1)
     try:
         if asyncio.iscoroutinefunction(sd.handler):
-            result = await asyncio.wait_for(
-                sd.handler(**args), timeout=timeout
-            )
+            if timeout and timeout > 0:
+                result = await asyncio.wait_for(sd.handler(**args), timeout=timeout)
+            else:
+                result = await sd.handler(**args)
         else:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(sd.handler, **args), timeout=timeout
-            )
+            if timeout and timeout > 0:
+                result = await asyncio.wait_for(asyncio.to_thread(sd.handler, **args), timeout=timeout)
+            else:
+                result = await asyncio.to_thread(sd.handler, **args)
         _dur = time.time() - _t0
         _tag = " [VSLOW]" if _dur > 10 else (" [SLOW]" if _dur > 3 else "")
         print(f"SKILL name={name} ok={bool(result.get('ok'))} dur={_dur:.2f}s{_tag}", flush=True)

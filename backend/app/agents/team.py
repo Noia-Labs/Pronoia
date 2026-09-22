@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any, AsyncIterator
 
 from .. import config
@@ -21,7 +22,7 @@ from ..skills.evidence_graph import (
 from .roster import AGENTS, get_agent, system_prompt
 
 EXPERT_IDS = ["event_scout", "market_analyst", "fundamentals_analyst", "deep_researcher", "predictor"]
-HYPOTHESIS_TIMEOUT_SECONDS = 45.0
+HYPOTHESIS_TIMEOUT_SECONDS = float(os.getenv("PRONOIA_HYPOTHESIS_TIMEOUT", "45"))
 
 # ======================================================================
 # Pronoia-RLVR v1 · Tier 1.5 接入预留（design §3.3.1 / §3.4 · 先训练后接入）
@@ -1280,14 +1281,15 @@ async def _extract_hypotheses(
     verdict = "failed"
     note = "研究假设提炼未完成，研究正文已保留。"
     try:
-        extracted = await asyncio.wait_for(
-            complete_json(
-                system_prompt("router") + "\n\n" + HYPOTHESIS_EXTRACT_INSTRUCTION,
-                f"用户原始问题：{question}\n\n【研究结论】\n{final_answer[:3500]}",
-                max_tokens=2000,
-            ),
-            timeout=HYPOTHESIS_TIMEOUT_SECONDS,
+        _hypo_call = complete_json(
+            system_prompt("router") + "\n\n" + HYPOTHESIS_EXTRACT_INSTRUCTION,
+            f"用户原始问题：{question}\n\n【研究结论】\n{final_answer[:3500]}",
+            max_tokens=2000,
         )
+        if HYPOTHESIS_TIMEOUT_SECONDS and HYPOTHESIS_TIMEOUT_SECONDS > 0:
+            extracted = await asyncio.wait_for(_hypo_call, timeout=HYPOTHESIS_TIMEOUT_SECONDS)
+        else:
+            extracted = await _hypo_call
         if not isinstance(extracted, dict) or not isinstance(extracted.get("items"), list):
             raise ValueError("invalid hypothesis response")
         for j, it in enumerate(extracted["items"][:5]):
