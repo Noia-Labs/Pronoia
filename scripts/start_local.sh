@@ -19,8 +19,10 @@ VENV_PY="$ROOT/backend/.venv/bin/python"
 LOG_DIR="$ROOT/.run"
 BACKEND_PORT="${PRONOIA_BACKEND_PORT:-27531}"
 FRONTEND_PORT="${PRONOIA_FRONTEND_PORT:-27532}"
+GATEWAY_PORT="${PRONOIA_SIMULATION_GATEWAY_PORT:-5010}"
 BACKEND_URL="http://127.0.0.1:$BACKEND_PORT"
 FRONTEND_URL="http://127.0.0.1:$FRONTEND_PORT"
+GATEWAY_URL="http://127.0.0.1:$GATEWAY_PORT"
 
 mkdir -p "$LOG_DIR"
 
@@ -56,12 +58,12 @@ check_env() {
 # ---- 子命令 ---------------------------------------------------------------
 do_start() {
   # 已在运行的判定以端口监听为准
-  if port_busy "$BACKEND_PORT" && port_busy "$FRONTEND_PORT"; then
-    echo "[start_local] 已在运行（backend :$BACKEND_PORT · frontend :$FRONTEND_PORT），跳过启动"
+  if port_busy "$BACKEND_PORT" && port_busy "$FRONTEND_PORT" && port_busy "$GATEWAY_PORT"; then
+    echo "[start_local] 已在运行（backend :$BACKEND_PORT · frontend :$FRONTEND_PORT · gateway :$GATEWAY_PORT），跳过启动"
     return 0
   fi
   # 只有一半在跑属于异常状态，正确地失败并提示
-  for pair in "backend:$BACKEND_PORT" "frontend:$FRONTEND_PORT"; do
+  for pair in "backend:$BACKEND_PORT" "frontend:$FRONTEND_PORT" "gateway:$GATEWAY_PORT"; do
     local name="${pair%%:*}" port="${pair##*:}"
     if port_busy "$port"; then
       echo "[start_local] 错误: 端口 $port 已被进程 $(port_pids "$port") 占用。"
@@ -69,6 +71,10 @@ do_start() {
       exit 1
     fi
   done
+
+  echo "[start_local] 启动推演网关 (stub) :$GATEWAY_PORT"
+  (cd "$ROOT/backend" && setsid "$VENV_PY" -m simulation_gateway_stub \
+    > "$LOG_DIR/gateway.log" 2>&1 < /dev/null &)
 
   echo "[start_local] 启动后端 uvicorn :$BACKEND_PORT"
   (cd "$ROOT/backend" && setsid "$VENV_PY" -m uvicorn app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" \
@@ -92,10 +98,12 @@ do_start() {
   fi
 
   # 探测真实监听 pid 回写 pid 文件（仅记录用途，setsid fork 导致启动时的 $! 不可靠）
+  port_pids "$GATEWAY_PORT"  > "$LOG_DIR/gateway.pid"  2>/dev/null || true
   port_pids "$BACKEND_PORT"  > "$LOG_DIR/backend.pid"  2>/dev/null || true
   port_pids "$FRONTEND_PORT" > "$LOG_DIR/frontend.pid" 2>/dev/null || true
 
   echo ""
+  echo "网关:  $GATEWAY_URL  (pid $(cat "$LOG_DIR/gateway.pid"))  日志: $LOG_DIR/gateway.log"
   echo "后端:  $BACKEND_URL   (pid $(cat "$LOG_DIR/backend.pid"))   日志: $LOG_DIR/backend.log"
   echo "前端:  $FRONTEND_URL  (pid $(cat "$LOG_DIR/frontend.pid"))  日志: $LOG_DIR/frontend.log"
   echo "停止:  $0 stop"
@@ -103,7 +111,7 @@ do_start() {
 
 do_stop() {
   local stopped=0
-  for pair in "backend:$BACKEND_PORT" "frontend:$FRONTEND_PORT"; do
+  for pair in "backend:$BACKEND_PORT" "frontend:$FRONTEND_PORT" "gateway:$GATEWAY_PORT"; do
     local name="${pair%%:*}" port="${pair##*:}" pid pgid
     pid="$(port_pids "$port")"
     if [ -z "$pid" ]; then
@@ -117,11 +125,17 @@ do_stop() {
     echo "[start_local] 已停止 $name :$port (pid=$pid)"
     stopped=1
   done
-  rm -f "$LOG_DIR/backend.pid" "$LOG_DIR/frontend.pid"
+  rm -f "$LOG_DIR/backend.pid" "$LOG_DIR/frontend.pid" "$LOG_DIR/gateway.pid"
 }
 
 do_status() {
   local pid
+  pid="$(port_pids "$GATEWAY_PORT")"
+  if [ -n "$pid" ]; then
+    echo "网关  :$GATEWAY_PORT  运行中 (pid=$pid)  health: $(curl -sf -m 2 "$GATEWAY_URL/health" || echo '不可达')"
+  else
+    echo "网关  :$GATEWAY_PORT  未运行"
+  fi
   pid="$(port_pids "$BACKEND_PORT")"
   if [ -n "$pid" ]; then
     echo "后端  :$BACKEND_PORT  运行中 (pid=$pid)  health: $(curl -sf -m 2 "$BACKEND_URL/api/health" || echo '不可达')"
@@ -141,7 +155,8 @@ do_logs() {
   case "$name" in
     backend) tail -f "$LOG_DIR/backend.log" ;;
     frontend) tail -f "$LOG_DIR/frontend.log" ;;
-    *) echo "用法: $0 logs backend|frontend"; exit 1 ;;
+    gateway) tail -f "$LOG_DIR/gateway.log" ;;
+    *) echo "用法: $0 logs backend|frontend|gateway"; exit 1 ;;
   esac
 }
 
