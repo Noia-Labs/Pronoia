@@ -71,12 +71,12 @@ do_start() {
   done
 
   echo "[start_local] 启动后端 uvicorn :$BACKEND_PORT"
-  (cd "$ROOT/backend" && setsid "$VENV_PY" -m uvicorn app.main:app --host 127.0.0.1 --port "$BACKEND_PORT" \
+  (cd "$ROOT/backend" && setsid "$VENV_PY" -m uvicorn app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" \
     > "$LOG_DIR/backend.log" 2>&1 < /dev/null &)
 
   echo "[start_local] 启动前端 vite :$FRONTEND_PORT"
   (cd "$ROOT/frontend" && PRONOIA_BACKEND_PORT="$BACKEND_PORT" PRONOIA_FRONTEND_PORT="$FRONTEND_PORT" \
-    setsid npm run dev -- --host 127.0.0.1 --port "$FRONTEND_PORT" --strictPort \
+    setsid npm run dev -- --host 0.0.0.0 --port "$FRONTEND_PORT" --strictPort \
     > "$LOG_DIR/frontend.log" 2>&1 < /dev/null &)
 
   # 等待后端 health 就绪（最多 30s），逐秒探测
