@@ -211,6 +211,12 @@ def get_client() -> AsyncOpenAI:
     """Return the client for an explicit snapshot/current default/legacy env."""
     global _client
     target = resolve_runtime_target()
+    # timeout_seconds <= 0 means "no timeout": pass httpx.Timeout(None) to both
+    # the httpx client and the SDK so 0 is not treated as a 0-second deadline.
+    sdk_timeout = (
+        httpx.Timeout(None) if not target.timeout_seconds or target.timeout_seconds <= 0
+        else target.timeout_seconds
+    )
     if target.profile_id is None:
         if _client is None:
             http_client = None
@@ -219,12 +225,12 @@ def get_client() -> AsyncOpenAI:
                     transport=httpx.AsyncHTTPTransport(
                         local_address="0.0.0.0" if config.LLM_FORCE_IPV4 else None, retries=2
                     ),
-                    timeout=target.timeout_seconds,
+                    timeout=sdk_timeout,
                 )
             client_kwargs: dict[str, Any] = dict(
                 base_url=target.base_url,
                 api_key=target.api_key,
-                timeout=target.timeout_seconds,
+                timeout=sdk_timeout,
             )
             if http_client is not None:
                 client_kwargs["http_client"] = http_client
@@ -251,12 +257,12 @@ def get_client() -> AsyncOpenAI:
                 transport=httpx.AsyncHTTPTransport(
                     local_address="0.0.0.0" if config.LLM_FORCE_IPV4 else None, retries=2
                 ),
-                timeout=target.timeout_seconds,
+                timeout=sdk_timeout,
             )
         client_kwargs = dict(
             base_url=target.base_url,
             api_key=target.api_key,
-            timeout=target.timeout_seconds,
+            timeout=sdk_timeout,
             max_retries=0,
         )
         if http_client is not None:
